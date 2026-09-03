@@ -1,21 +1,23 @@
 # Godmode Ops
 
-Purpose-built operations platform for Godmode NZ. M1 focuses on inventory, BOMs, build reservations, consumption, and as-built PC genealogy.
+Purpose-built operations platform for Godmode NZ. The current M2 foundation covers inventory, BOMs, serialized component allocation, production builds and manufactured-PC genealogy.
 
 ## Architecture
 
 - `apps/api` — Fastify + TypeScript business API
-- `apps/web` — React + Vite dashboard
-- `prisma` — PostgreSQL schema
-- PostgreSQL is the source of truth for inventory, BOMs, builds, and manufactured units
+- `apps/web` — React + Vite operations dashboard
+- `prisma` — PostgreSQL domain schema
+- PostgreSQL is authoritative for inventory, BOMs, reservations, builds and manufactured units
 
-## M1 domain rules
+## Domain rules
 
 1. Inventory changes only through immutable ledger entries.
-2. Reservations do not change on-hand stock.
-3. BOMs are versioned; builds snapshot a BOM at creation.
-4. Build completion consumes reserved inventory in a database transaction.
-5. Completed PCs get a Godmode Unit ID and immutable as-built component records.
+2. Reservations commit stock without changing on-hand quantity.
+3. Serialized SKUs create one `InventoryUnit` per physical serial number.
+4. Serialized reservations bind a specific physical unit to a specific build/BOM line.
+5. BOMs are versioned; builds snapshot a BOM at creation.
+6. Build completion consumes reservations transactionally and transfers serial genealogy into the manufactured PC.
+7. Completed PCs receive a unique Godmode Unit ID and permanent as-built component record.
 
 ## Local setup
 
@@ -32,22 +34,27 @@ npm run dev:web
 API: `http://localhost:4000`
 Dashboard: `http://localhost:5173`
 
-## Initial API surface
+## M2 dashboard
 
-- `GET /health`
-- `POST /component-families`
-- `POST /skus`
-- `POST /locations`
-- `POST /inventory/receipts`
-- `GET /inventory`
-- `POST /products`
-- `POST /products/:productId/bom-versions`
-- `POST /builds`
-- `POST /builds/:buildId/reserve`
-- `POST /builds/:buildId/complete`
-- `GET /builds`
-- `GET /units/:unitNumber`
+The dashboard now includes:
+
+- stock position with on-hand / reserved / available quantities
+- searchable inventory
+- barcode-assisted receiving
+- serialized receiving with one serial number per physical unit
+- product and versioned BOM management
+- build queue and reservation visibility
+- manufactured unit list
+
+## Factory / Controller API
+
+- `GET /factory/builds/ready` — builds ready for Controller/deployment work
+- `GET /factory/builds/:buildNumber` — expected build and allocated component detail
+- `POST /factory/builds/:buildNumber/hardware-report` — Controller/Agent detected-hardware report
+- `POST /factory/builds/:buildNumber/events` — deployment, test and QA events
+
+Core endpoints also include catalog, barcode lookup, inventory units/movements, receiving, products/BOMs, build reservation/start/completion and unit genealogy.
 
 ## Next milestone
 
-M2: barcode receiving, serialized component allocation, richer Inventory/BOM screens, and controller-facing factory API.
+M3 should connect Shopify orders/configurations to Godmode products and build BOM snapshots, then add purchasing/supplier records and reorder planning.
