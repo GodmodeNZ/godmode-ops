@@ -2,10 +2,11 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import {PrismaClient,Prisma,ReservationStatus,BuildStatus,TrackingMode} from '@prisma/client';
 import {z} from 'zod';
+import {resolveSalesOrder,upsertShopifyOrder,verifyShopifyHmac,type ShopifyOrder} from './shopify.js';
 const db=new PrismaClient();const app=Fastify({logger:true});await app.register(cors,{origin:true});
 const money=(v?:number)=>v===undefined?undefined:new Prisma.Decimal(v);const rec=z.record(z.string(),z.any());
 app.setErrorHandler((e,_q,r)=>r.code(e instanceof z.ZodError?400:500).send({error:e.message}));
-app.get('/health',async()=>({ok:true,service:'godmode-ops-api',milestone:'M2'}));
+app.get('/health',async()=>({ok:true,service:'godmode-ops-api',milestone:'M3'}));
 app.get('/catalog',async()=>{const[families,skus,locations,products]=await Promise.all([db.componentFamily.findMany({orderBy:{name:'asc'}}),db.sku.findMany({where:{active:true},include:{family:true,barcodes:true},orderBy:{name:'asc'}}),db.location.findMany({orderBy:{name:'asc'}}),db.product.findMany({where:{active:true},include:{bomVersions:{orderBy:{version:'desc'},take:1}},orderBy:{name:'asc'}})]);return{families,skus,locations,products}});
 app.post('/component-families',async(q,r)=>r.code(201).send(await db.componentFamily.create({data:z.object({name:z.string(),category:z.string(),attributes:rec.optional()}).parse(q.body)})));
 app.post('/locations',async(q,r)=>r.code(201).send(await db.location.create({data:z.object({code:z.string(),name:z.string()}).parse(q.body)})));
@@ -29,4 +30,8 @@ app.get('/factory/builds/ready',async()=>db.build.findMany({where:{status:{in:[B
 app.get('/factory/builds/:buildNumber',async q=>{const{buildNumber}=z.object({buildNumber:z.string()}).parse(q.params);return db.build.findUnique({where:{buildNumber},include:{product:true,lines:true,reservations:{include:{sku:true,inventoryUnit:true}},events:{orderBy:{createdAt:'asc'}}}})});
 app.post('/factory/builds/:buildNumber/hardware-report',async(q,r)=>{const{buildNumber}=z.object({buildNumber:z.string()}).parse(q.params),b=z.object({station:z.string().optional(),agentId:z.string().optional(),hardware:rec,passed:z.boolean().optional()}).parse(q.body);const build=await db.build.findUniqueOrThrow({where:{buildNumber}});await db.buildEvent.create({data:{buildId:build.id,type:'HARDWARE_REPORT',actor:b.agentId,metadata:{station:b.station,hardware:b.hardware,passed:b.passed}}});return r.code(201).send({ok:true,buildId:build.id})});
 app.post('/factory/builds/:buildNumber/events',async(q,r)=>{const{buildNumber}=z.object({buildNumber:z.string()}).parse(q.params),b=z.object({type:z.string(),actor:z.string().optional(),metadata:rec.optional()}).parse(q.body),build=await db.build.findUniqueOrThrow({where:{buildNumber}});return r.code(201).send(await db.buildEvent.create({data:{buildId:build.id,...b}}))});
-const port=Number(process.env.API_PORT??4000);await app.listen({port,host:'0.0.0.0'});
+
+app.get('/sales-orders',async()=>db.salesOrder.findMany({include:{lines:true},orderBy:{createdAt:'desc'},take:200}));
+app.get('/shopify/mappings',async()=>db.shopifyProductMapping.findMany({where:{active:true},include:{product:true,configurationRules:{include:{replacementSku:true}}},orderBy:{priority:'asc'}}));
+app.post('/shopify/mappings',async(q,r)=>{const b=z.object({shopDomain:z.string().optional(),shopifyProductId:z.string().optional(),shopifyVariantId:z.string().optional(),sku:z.string().optional(),productId:z.string(),priority:z.number().int().default(100),configurationRules:z.array(z.object({propertyName:z.string(),propertyValue:z.string(),role:z.string(),replacementSkuId:z.string(),quantity:z.number().int().positive().optional()})).default([])}).parse(q.body);if(!b.shopifyProductId&&!b.shopifyVariantId&&!b.sku)return r.code(400).send({error:'Provide Shopify product ID, variant ID or SKU'});return r.code(201).send(await db.shopifyProductMapping.create({data:{shopDomain:b.shopDomain,shopifyProductId:b.shopifyProductId,shopifyVariantId:b.shopifyVariantId,sku:b.sku,productId:b.productId,priority:b.priority,configurationRules:{create:b.configurationRules}},include:{product:true,configurationRules:true}}))});
+app.post('/
