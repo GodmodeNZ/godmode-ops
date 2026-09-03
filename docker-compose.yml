@@ -1,0 +1,13 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: godmode
+      POSTGRES_PASSWORD: godmode
+      POSTGRES_DB: godmode_ops
+    ports:
+      - "5432:5432"
+    volumes:
+      - godmode_ops_pg:/var/lib/postgresql/data
+volumes:
+  godmode_ops_pg:

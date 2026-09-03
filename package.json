@@ -1,0 +1,14 @@
+{
+  "name": "godmode-ops",
+  "private": true,
+  "workspaces": ["apps/*"],
+  "scripts": {
+    "dev:api": "npm --workspace apps/api run dev",
+    "dev:web": "npm --workspace apps/web run dev",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:studio": "prisma studio"
+  },
+  "devDependencies": {"prisma": "^6.15.0"},
+  "dependencies": {"@prisma/client": "^6.15.0"}
+}
