@@ -41,6 +41,28 @@ enum BuildStatus {
   CANCELLED
 }
 
+enum SalesOrderStatus {
+  RECEIVED
+  READY_FOR_PRODUCTION
+  BLOCKED
+  IN_PRODUCTION
+  COMPLETED
+  CANCELLED
+}
+
+enum SalesOrderLineStatus {
+  UNRESOLVED
+  RESOLVED
+  BLOCKED
+}
+
+enum IntegrationEventStatus {
+  RECEIVED
+  PROCESSED
+  FAILED
+  IGNORED
+}
+
 model ComponentFamily {
   id         String   @id @default(cuid())
   name       String   @unique
@@ -52,23 +74,24 @@ model ComponentFamily {
 }
 
 model Sku {
-  id              String                 @id @default(cuid())
-  code            String                 @unique
-  name            String
-  familyId        String
-  family          ComponentFamily        @relation(fields: [familyId], references: [id])
-  trackingMode    TrackingMode           @default(QUANTITY)
-  attributes      Json?
-  active          Boolean                @default(true)
-  createdAt       DateTime               @default(now())
-  updatedAt       DateTime               @updatedAt
-  barcodes        SkuBarcode[]
-  transactions    InventoryTransaction[]
-  reservations    InventoryReservation[]
-  inventoryUnits  InventoryUnit[]
-  bomLines        BomLine[]              @relation("ExactSku")
-  approvedBomSkus ApprovedBomSku[]
-  unitComponents  UnitComponent[]
+  id                 String                       @id @default(cuid())
+  code               String                       @unique
+  name               String
+  familyId           String
+  family             ComponentFamily              @relation(fields: [familyId], references: [id])
+  trackingMode       TrackingMode                 @default(QUANTITY)
+  attributes         Json?
+  active             Boolean                      @default(true)
+  createdAt          DateTime                     @default(now())
+  updatedAt          DateTime                     @updatedAt
+  barcodes           SkuBarcode[]
+  transactions       InventoryTransaction[]
+  reservations       InventoryReservation[]
+  inventoryUnits     InventoryUnit[]
+  bomLines           BomLine[]                    @relation("ExactSku")
+  approvedBomSkus    ApprovedBomSku[]
+  unitComponents     UnitComponent[]
+  configurationRules ShopifyConfigurationRule[]
 }
 
 model SkuBarcode {
@@ -151,14 +174,15 @@ model InventoryReservation {
 }
 
 model Product {
-  id          String       @id @default(cuid())
-  code        String       @unique
-  name        String
-  active      Boolean      @default(true)
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
-  bomVersions BomVersion[]
-  builds      Build[]
+  id              String                  @id @default(cuid())
+  code            String                  @unique
+  name            String
+  active          Boolean                 @default(true)
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
+  bomVersions     BomVersion[]
+  builds          Build[]
+  shopifyMappings ShopifyProductMapping[]
 }
 
 model BomVersion {
@@ -264,4 +288,102 @@ model UnitComponent {
 
   @@index([unitId, role])
   @@index([serialNumber])
+}
+
+model SalesOrder {
+  id                String           @id @default(cuid())
+  source            String
+  externalId        String
+  orderNumber       String
+  shopDomain        String?
+  financialStatus   String?
+  fulfillmentStatus String?
+  currency          String?
+  total             Decimal?         @db.Decimal(12, 2)
+  customerName      String?
+  customerEmail     String?
+  status            SalesOrderStatus @default(RECEIVED)
+  externalCreatedAt DateTime?
+  raw               Json?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  lines             SalesOrderLine[]
+
+  @@unique([source, externalId])
+  @@index([source, orderNumber])
+  @@index([status, createdAt])
+}
+
+model SalesOrderLine {
+  id                String               @id @default(cuid())
+  salesOrderId      String
+  salesOrder        SalesOrder           @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+  externalLineId    String
+  title             String
+  sku               String?
+  shopifyProductId  String?
+  shopifyVariantId  String?
+  quantity          Int
+  properties        Json?
+  status            SalesOrderLineStatus @default(UNRESOLVED)
+  resolutionMessage String?
+  mappingId         String?
+  resolvedProductId String?
+  buildIds          String[]             @default([])
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+
+  @@unique([salesOrderId, externalLineId])
+  @@index([status])
+}
+
+model ShopifyProductMapping {
+  id                 String                     @id @default(cuid())
+  shopDomain         String?
+  shopifyProductId   String?
+  shopifyVariantId   String?
+  sku                String?
+  productId          String
+  product            Product                    @relation(fields: [productId], references: [id])
+  active             Boolean                    @default(true)
+  priority           Int                        @default(100)
+  createdAt          DateTime                   @default(now())
+  updatedAt          DateTime                   @updatedAt
+  configurationRules ShopifyConfigurationRule[]
+
+  @@index([shopDomain, shopifyVariantId, active])
+  @@index([shopDomain, shopifyProductId, active])
+  @@index([shopDomain, sku, active])
+}
+
+model ShopifyConfigurationRule {
+  id               String                @id @default(cuid())
+  mappingId        String
+  mapping          ShopifyProductMapping @relation(fields: [mappingId], references: [id], onDelete: Cascade)
+  propertyName     String
+  propertyValue    String
+  role             String
+  replacementSkuId String
+  replacementSku   Sku                   @relation(fields: [replacementSkuId], references: [id])
+  quantity         Int?
+  createdAt        DateTime              @default(now())
+
+  @@index([mappingId, propertyName, propertyValue])
+}
+
+model IntegrationEvent {
+  id              String                 @id @default(cuid())
+  provider        String
+  externalEventId String
+  topic           String
+  shopDomain      String?
+  status          IntegrationEventStatus @default(RECEIVED)
+  triggeredAt     DateTime?
+  processedAt     DateTime?
+  error           String?
+  payload         Json?
+  createdAt       DateTime               @default(now())
+
+  @@unique([provider, externalEventId])
+  @@index([provider, topic, createdAt])
 }
