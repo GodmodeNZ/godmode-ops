@@ -3,21 +3,23 @@ import {PrismaClient,Prisma} from '@prisma/client';
 
 const db=new PrismaClient();
 const write=process.argv.includes('--write');
-const shop=(process.env.SHOPIFY_STORE_DOMAIN??'').replace(/^https?:\/\//,'').replace(/\/$/,'');
+const shopRaw=(process.env.SHOPIFY_STORE_DOMAIN??'').trim().replace(/^https?:\/\//,'').replace(/\/$/,'');
+const shop=shopRaw.endsWith('.myshopify.com')?shopRaw:shopRaw?`${shopRaw}.myshopify.com`:'';
 const clientId=process.env.SHOPIFY_CLIENT_ID??'';
 const clientSecret=process.env.SHOPIFY_CLIENT_SECRET??'';
 const legacyToken=process.env.SHOPIFY_ADMIN_ACCESS_TOKEN??'';
 const version=process.env.SHOPIFY_API_VERSION??'2026-07';
-if(!shop)throw new Error('Set SHOPIFY_STORE_DOMAIN in .env');
+if(!shop)throw new Error('Set SHOPIFY_STORE_DOMAIN to your myshopify store domain or subdomain in .env');
 if(!legacyToken&&(!clientId||!clientSecret))throw new Error('Set SHOPIFY_CLIENT_ID and SHOPIFY_CLIENT_SECRET in .env');
 
+async function readJson(r:Response,label:string){const text=await r.text();let j:any;try{j=JSON.parse(text)}catch{throw new Error(`${label} returned HTTP ${r.status} ${r.statusText}, content-type ${r.headers.get('content-type')??'unknown'}: ${text.slice(0,500)}`)}return j}
 let cachedToken='';
 async function accessToken(){
  if(legacyToken)return legacyToken;
  if(cachedToken)return cachedToken;
  const r=await fetch(`https://${shop}/admin/oauth/access_token`,{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({grant_type:'client_credentials',client_id:clientId,client_secret:clientSecret})});
- const j:any=await r.json();
- if(!r.ok||!j.access_token)throw new Error(`Shopify authentication failed: ${JSON.stringify(j)}`);
+ const j:any=await readJson(r,'Shopify token endpoint');
+ if(!r.ok||!j.access_token)throw new Error(`Shopify authentication failed (${r.status}): ${JSON.stringify(j)}`);
  cachedToken=j.access_token;
  return cachedToken;
 }
@@ -25,13 +27,13 @@ async function accessToken(){
 type Variant={id:string;title:string;sku:string|null;price:string;inventoryQuantity:number};
 type Product={id:string;title:string;handle:string;status:string;productType:string;vendor:string;tags:string[];variants:{nodes:Variant[]}};
 const query=`query Products($after:String){products(first:100,after:$after,query:"status:active"){nodes{id title handle status productType vendor tags variants(first:100){nodes{id title sku price inventoryQuantity}}}pageInfo{hasNextPage endCursor}}}`;
-async function gql(after:string|null){const token=await accessToken();const r=await fetch(`https://${shop}/admin/api/${version}/graphql.json`,{method:'POST',headers:{'content-type':'application/json','X-Shopify-Access-Token':token},body:JSON.stringify({query,variables:{after}})});const j:any=await r.json();if(!r.ok||j.errors)throw new Error(JSON.stringify(j.errors??j));return j.data.products as {nodes:Product[];pageInfo:{hasNextPage:boolean;endCursor:string|null}}}
+async function gql(after:string|null){const token=await accessToken();const r=await fetch(`https://${shop}/admin/api/${version}/graphql.json`,{method:'POST',headers:{'content-type':'application/json','X-Shopify-Access-Token':token},body:JSON.stringify({query,variables:{after}})});const j:any=await readJson(r,'Shopify GraphQL endpoint');if(!r.ok||j.errors)throw new Error(`Shopify GraphQL failed (${r.status}): ${JSON.stringify(j.errors??j)}`);return j.data.products as {nodes:Product[];pageInfo:{hasNextPage:boolean;endCursor:string|null}}}
 const numeric=(gid:string)=>gid.split('/').pop()!;
 const cleanCode=(s:string)=>s.toUpperCase().replace(/[^A-Z0-9]+/g,'-').replace(/^-|-$/g,'').slice(0,80);
 const isBuilder=(p:Product)=>p.tags.includes('builder-component')||p.tags.includes('internal-component')||p.productType.startsWith('Builder');
 const category=(p:Product,v:Variant)=>{const t=(p.productType+' '+(v.sku??'')+' '+p.title).toUpperCase();for(const x of ['CPU','GPU','RAM','SSD','MOTHERBOARD','COOLER','CASE','PSU','WARRANTY'])if(t.includes(x))return x;return 'COMPONENT'};
 
-async function main(){let after:null|string=null,products:Product[]=[];do{const page=await gql(after);products.push(...page.nodes);after=page.pageInfo.hasNextPage?page.pageInfo.endCursor:null}while(after);
+async function main(){console.log(`Shopify shop: ${shop}`);let after:null|string=null,products:Product[]=[];do{const page=await gql(after);products.push(...page.nodes);after=page.pageInfo.hasNextPage?page.pageInfo.endCursor:null}while(after);
  const pcProducts=products.filter(p=>p.productType==='Gaming PC');
  const builderProducts=products.filter(p=>p.productType!=='Gaming PC'&&isBuilder(p));
  const builderVariants=builderProducts.flatMap(p=>p.variants.nodes.map(v=>({p,v,cat:category(p,v)})));
