@@ -5,6 +5,7 @@ import {PrismaClient,Prisma,ReservationStatus,BuildStatus,TrackingMode} from '@p
 import {z} from 'zod';
 import {resolveSalesOrder,upsertShopifyOrder,verifyShopifyHmac,type ShopifyOrder} from './shopify.js';
 import {dryRunShopifyOrder} from './shopify-dry-run.js';
+import {registerProcurementRoutes} from './procurement.js';
 
 const db=new PrismaClient();
 const app=Fastify({logger:true});
@@ -14,7 +15,7 @@ const money=(v?:number)=>v===undefined?undefined:new Prisma.Decimal(v);
 const rec=z.record(z.string(),z.any());
 app.setErrorHandler((e,_q,r)=>r.code(e instanceof z.ZodError?400:500).send({error:e.message}));
 
-app.get('/health',async()=>({ok:true,service:'godmode-ops-api',milestone:'M3'}));
+app.get('/health',async()=>({ok:true,service:'godmode-ops-api',milestone:'M5'}));
 app.get('/catalog',async()=>{const[families,skus,locations,products]=await Promise.all([db.componentFamily.findMany({orderBy:{name:'asc'}}),db.sku.findMany({where:{active:true},include:{family:true,barcodes:true},orderBy:{name:'asc'}}),db.location.findMany({orderBy:{name:'asc'}}),db.product.findMany({where:{active:true},include:{bomVersions:{orderBy:{version:'desc'},take:1}},orderBy:{name:'asc'}})]);return{families,skus,locations,products}});
 app.post('/component-families',async(q,r)=>r.code(201).send(await db.componentFamily.create({data:z.object({name:z.string(),category:z.string(),attributes:rec.optional()}).parse(q.body)})));
 app.post('/locations',async(q,r)=>r.code(201).send(await db.location.create({data:z.object({code:z.string(),name:z.string()}).parse(q.body)})));
@@ -50,6 +51,8 @@ app.post('/sales-orders/:id/resolve',async(q,r)=>{const{id}=z.object({id:z.strin
 app.post('/integrations/shopify/dry-run',async(q,r)=>{const body=z.object({shopDomain:z.string().optional(),order:z.any(),locationId:z.string().optional()}).parse(q.body);return r.send(await dryRunShopifyOrder(db,body.order as ShopifyOrder,body.shopDomain,body.locationId??process.env.DEFAULT_INVENTORY_LOCATION_ID))});
 app.post('/integrations/shopify/test-order',async(q,r)=>{const body=z.object({shopDomain:z.string().optional(),order:z.any(),locationId:z.string().optional()}).parse(q.body);const order=await upsertShopifyOrder(db,body.order as ShopifyOrder,body.shopDomain);const resolved=await resolveSalesOrder(db,order.id,body.locationId??process.env.DEFAULT_INVENTORY_LOCATION_ID);return r.code(201).send(resolved)});
 app.post('/integrations/shopify/webhooks/orders-paid',async(q,r)=>{const secret=process.env.SHOPIFY_WEBHOOK_SECRET??'';const raw=((q as any).rawBody as Buffer|undefined)??Buffer.from(JSON.stringify(q.body??{}));const hmac=q.headers['x-shopify-hmac-sha256'] as string|undefined;if(!verifyShopifyHmac(raw,hmac,secret))return r.code(401).send({error:'Invalid Shopify webhook signature'});const eventId=(q.headers['x-shopify-webhook-id'] as string|undefined)??'';const shopDomain=q.headers['x-shopify-shop-domain'] as string|undefined;const topic=(q.headers['x-shopify-topic'] as string|undefined)??'orders/paid';if(!eventId)return r.code(400).send({error:'Missing Shopify webhook ID'});const existing=await db.integrationEvent.findUnique({where:{provider_externalEventId:{provider:'SHOPIFY',externalEventId:eventId}}});if(existing)return r.code(200).send({ok:true,deduplicated:true});const event=await db.integrationEvent.create({data:{provider:'SHOPIFY',externalEventId:eventId,topic,shopDomain,payload:q.body as Prisma.InputJsonValue}});try{const order=await upsertShopifyOrder(db,q.body as ShopifyOrder,shopDomain);await resolveSalesOrder(db,order.id,process.env.DEFAULT_INVENTORY_LOCATION_ID);await db.integrationEvent.update({where:{id:event.id},data:{status:'PROCESSED',processedAt:new Date()}});return r.code(200).send({ok:true})}catch(e){await db.integrationEvent.update({where:{id:event.id},data:{status:'FAILED',processedAt:new Date(),error:e instanceof Error?e.message:String(e)}});throw e}});
+
+await registerProcurementRoutes(app,db);
 
 const port=Number(process.env.API_PORT??4000);
 await app.listen({port,host:'0.0.0.0'});
