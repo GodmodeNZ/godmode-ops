@@ -18,7 +18,7 @@ const run = (command, args) => { const r = spawnSync(command, args, { stdio: 'in
 try {
   if (process.env.LOCAL_POSTGRES === 'true') {
     if (process.platform !== 'win32' && process.getuid?.() === 0) throw new Error('For root-only Linux environments use Docker Compose. PostgreSQL must run as an ordinary OS user.');
-    pg = new EmbeddedPostgres({ databaseDir: resolve('.data/postgres'), user: 'godmode', password: process.env.LOCAL_DB_PASSWORD, port: 55433, persistent: true, postgresFlags: ['-h', '127.0.0.1'], onLog: () => {}, onError: console.error });
+    pg = new EmbeddedPostgres({ databaseDir: resolve('.data/postgres'), user: 'godmode', password: process.env.LOCAL_DB_PASSWORD, port: 55433, persistent: true, postgresFlags: ['-h', '127.0.0.1'], onLog: console.log, onError: console.error });
     const fresh = !existsSync('.data/postgres/PG_VERSION');
     if (fresh) await pg.initialise();
     await pg.start(); if (fresh) await pg.createDatabase('godmode_ops_test');
@@ -47,4 +47,4 @@ try {
   const cleanup = async () => { server.kill('SIGTERM'); if (pg) await pg.stop(); };
   process.once('SIGINT', cleanup); process.once('SIGTERM', cleanup);
   server.on('exit', async code => { if (pg) await pg.stop(); process.exit(code ?? 0); });
-} catch (e) { console.error(e.message); if (pg) await pg.stop(); process.exitCode = 1; }
+} catch (e) { console.error(e instanceof Error ? e.message : 'Database startup failed; see the PostgreSQL output above.'); if (pg) await pg.stop(); process.exitCode = 1; }
