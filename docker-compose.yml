@@ -1,13 +1,35 @@
 services:
-  postgres:
-    image: postgres:16-alpine
+  db:
+    image: postgres:17
     environment:
       POSTGRES_USER: godmode
-      POSTGRES_PASSWORD: godmode
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
       POSTGRES_DB: godmode_ops
-    ports:
-      - "5432:5432"
     volumes:
-      - godmode_ops_pg:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U godmode -d godmode_ops"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+  app:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://godmode:${DB_PASSWORD}@db:5432/godmode_ops?schema=public
+      NODE_ENV: production
+      API_PORT: 4000
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:4000:4000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
 volumes:
-  godmode_ops_pg:
+  postgres_data:

@@ -349,6 +349,65 @@ model GodmodeUnit {
   createdAt   DateTime        @default(now())
   completedAt DateTime?
   components  UnitComponent[]
+  shipment    Shipment?
+  repairs     RepairTicket[]
+}
+
+model User {
+  id String @id @default(cuid())
+  email String @unique
+  name String
+  passwordHash String
+  role String @default("OPERATOR")
+  active Boolean @default(true)
+  createdAt DateTime @default(now())
+  sessions Session[]
+}
+
+model Session {
+  tokenHash String @id
+  userId String
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  @@index([expiresAt])
+}
+
+model Operation {
+  key String @id
+  fingerprint String
+  result Json
+  createdAt DateTime @default(now())
+}
+
+model AuditLog {
+  id String @id @default(cuid())
+  actor String
+  action String
+  reference String?
+  createdAt DateTime @default(now())
+  @@index([createdAt])
+}
+
+model Shipment {
+  id String @id @default(cuid())
+  unitId String @unique
+  unit GodmodeUnit @relation(fields: [unitId], references: [id])
+  carrier String
+  trackingNumber String
+  dispatchedBy String
+  dispatchedAt DateTime @default(now())
+}
+
+model RepairTicket {
+  id String @id @default(cuid())
+  number String @unique
+  unitId String
+  unit GodmodeUnit @relation(fields: [unitId], references: [id])
+  issue String
+  status String @default("OPEN")
+  resolution String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model UnitComponent {

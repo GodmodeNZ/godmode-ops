@@ -1,7 +1,9 @@
 {
   "name": "godmode-ops",
   "private": true,
-  "workspaces": ["apps/*"],
+  "workspaces": [
+    "apps/*"
+  ],
   "scripts": {
     "dev:api": "npm --workspace apps/api run dev",
     "dev:web": "npm --workspace apps/web run dev",
@@ -11,14 +13,24 @@
     "seed": "tsx prisma/seed.ts",
     "shopify:sync": "tsx scripts/shopify-sync.ts",
     "procurement:smoke": "tsx scripts/procurement-smoke.ts",
-    "procurement:plan": "tsx scripts/procurement-plan.ts"
+    "procurement:plan": "tsx scripts/procurement-plan.ts",
+    "build": "npm --workspace apps/api run build && npm --workspace apps/web run build",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "db:deploy": "node scripts/migrate.mjs",
+    "start": "node apps/api/dist/server.js",
+    "local": "node scripts/local.mjs"
   },
   "devDependencies": {
+    "embedded-postgres": "^18.4.0-beta.17",
     "prisma": "^6.15.0",
     "tsx": "^4.20.5"
   },
   "dependencies": {
     "@prisma/client": "^6.15.0",
     "dotenv": "^16.6.1"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22.12"
   }
 }
