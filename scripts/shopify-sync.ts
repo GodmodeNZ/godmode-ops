@@ -4,15 +4,28 @@ import {PrismaClient,Prisma} from '@prisma/client';
 const db=new PrismaClient();
 const write=process.argv.includes('--write');
 const shop=(process.env.SHOPIFY_STORE_DOMAIN??'').replace(/^https?:\/\//,'').replace(/\/$/,'');
-const token=process.env.SHOPIFY_ADMIN_ACCESS_TOKEN??'';
+const clientId=process.env.SHOPIFY_CLIENT_ID??'';
+const clientSecret=process.env.SHOPIFY_CLIENT_SECRET??'';
+const legacyToken=process.env.SHOPIFY_ADMIN_ACCESS_TOKEN??'';
 const version=process.env.SHOPIFY_API_VERSION??'2026-07';
-if(!shop||!token)throw new Error('Set SHOPIFY_STORE_DOMAIN and SHOPIFY_ADMIN_ACCESS_TOKEN in .env');
+if(!shop)throw new Error('Set SHOPIFY_STORE_DOMAIN in .env');
+if(!legacyToken&&(!clientId||!clientSecret))throw new Error('Set SHOPIFY_CLIENT_ID and SHOPIFY_CLIENT_SECRET in .env');
+
+let cachedToken='';
+async function accessToken(){
+ if(legacyToken)return legacyToken;
+ if(cachedToken)return cachedToken;
+ const r=await fetch(`https://${shop}/admin/oauth/access_token`,{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({grant_type:'client_credentials',client_id:clientId,client_secret:clientSecret})});
+ const j:any=await r.json();
+ if(!r.ok||!j.access_token)throw new Error(`Shopify authentication failed: ${JSON.stringify(j)}`);
+ cachedToken=j.access_token;
+ return cachedToken;
+}
 
 type Variant={id:string;title:string;sku:string|null;price:string;inventoryQuantity:number};
 type Product={id:string;title:string;handle:string;status:string;productType:string;vendor:string;tags:string[];variants:{nodes:Variant[]}};
-
 const query=`query Products($after:String){products(first:100,after:$after,query:"status:active"){nodes{id title handle status productType vendor tags variants(first:100){nodes{id title sku price inventoryQuantity}}}pageInfo{hasNextPage endCursor}}}`;
-async function gql(after:string|null){const r=await fetch(`https://${shop}/admin/api/${version}/graphql.json`,{method:'POST',headers:{'content-type':'application/json','X-Shopify-Access-Token':token},body:JSON.stringify({query,variables:{after}})});const j:any=await r.json();if(!r.ok||j.errors)throw new Error(JSON.stringify(j.errors??j));return j.data.products as {nodes:Product[];pageInfo:{hasNextPage:boolean;endCursor:string|null}}}
+async function gql(after:string|null){const token=await accessToken();const r=await fetch(`https://${shop}/admin/api/${version}/graphql.json`,{method:'POST',headers:{'content-type':'application/json','X-Shopify-Access-Token':token},body:JSON.stringify({query,variables:{after}})});const j:any=await r.json();if(!r.ok||j.errors)throw new Error(JSON.stringify(j.errors??j));return j.data.products as {nodes:Product[];pageInfo:{hasNextPage:boolean;endCursor:string|null}}}
 const numeric=(gid:string)=>gid.split('/').pop()!;
 const cleanCode=(s:string)=>s.toUpperCase().replace(/[^A-Z0-9]+/g,'-').replace(/^-|-$/g,'').slice(0,80);
 const isBuilder=(p:Product)=>p.tags.includes('builder-component')||p.tags.includes('internal-component')||p.productType.startsWith('Builder');
