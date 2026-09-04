@@ -57,11 +57,14 @@ export async function resolveSalesOrder(db:PrismaClient,salesOrderId:string,loca
     if(!bom){blocked=true;await db.salesOrderLine.update({where:{id:line.id},data:{status:SalesOrderLineStatus.BLOCKED,mappingId:mapping.id,resolvedProductId:mapping.productId,resolutionMessage:'Mapped product has no active BOM'}});continue;}
     const properties=(line.properties??{}) as Record<string,unknown>;
     const overrides=new Map<string,{skuId:string;quantity?:number}>();
-    for(const rule of mapping.configurationRules){if(String(properties[rule.propertyName]??'')===rule.propertyValue)overrides.set(rule.role,{skuId:rule.replacementSkuId,quantity:rule.quantity??undefined});}
+    for(const rule of mapping.configurationRules){
+      const actual=rule.propertyName==='__variant_id__'?line.shopifyVariantId:rule.propertyName==='__sku__'?line.sku:String(properties[rule.propertyName]??'');
+      if(String(actual??'')===rule.propertyValue)overrides.set(rule.role,{skuId:rule.replacementSkuId,quantity:rule.quantity??undefined});
+    }
     const buildIds:string[]=[];
     for(let unitIndex=0;unitIndex<line.quantity;unitIndex++){
       const buildNumber=`${order.orderNumber.replace(/[^A-Za-z0-9-]/g,'')}-${line.id.slice(-6)}-${unitIndex+1}`;
-      const build=await db.build.create({data:{buildNumber,productId:mapping.productId,bomVersionId:bom.id,externalOrderId:order.externalId,lines:{create:bom.lines.map(bl=>{const o=overrides.get(bl.role);return{role:bl.role,quantity:o?.quantity??bl.quantity,requestedSkuId:o?.skuId??bl.exactSkuId,requirement:bl.requirement,allocatedSkuId:o?.skuId??bl.exactSkuId??bl.approvedSkus[0]?.skuId}})},events:{create:{type:'BUILD_CREATED_FROM_SHOPIFY',metadata:{salesOrderId:order.id,salesOrderLineId:line.id}}}},include:{lines:true}});
+      const build=await db.build.create({data:{buildNumber,productId:mapping.productId,bomVersionId:bom.id,externalOrderId:order.externalId,lines:{create:bom.lines.map(bl=>{const o=overrides.get(bl.role);return{role:bl.role,quantity:o?.quantity??bl.quantity,requestedSkuId:o?.skuId??bl.exactSkuId,requirement:bl.requirement,allocatedSkuId:o?.skuId??bl.exactSkuId??bl.approvedSkus[0]?.skuId}})},events:{create:{type:'BUILD_CREATED_FROM_SHOPIFY',metadata:{salesOrderId:order.id,salesOrderLineId:line.id,shopifyVariantId:line.shopifyVariantId}}}},include:{lines:true}});
       buildIds.push(build.id);
       if(locationId){try{await db.$transaction(tx=>reserveBuild(tx,build.id,locationId));}catch(e){blocked=true;await db.buildEvent.create({data:{buildId:build.id,type:'INVENTORY_RESERVATION_BLOCKED',actor:'shopify',metadata:{message:e instanceof Error?e.message:String(e)}}});}}
     }
