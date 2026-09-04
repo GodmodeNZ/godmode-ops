@@ -8,7 +8,8 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
-    "seed": "tsx prisma/seed.ts"
+    "seed": "tsx prisma/seed.ts",
+    "shopify:sync": "tsx scripts/shopify-sync.ts"
   },
   "devDependencies": {
     "prisma": "^6.15.0",
