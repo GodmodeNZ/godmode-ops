@@ -63,6 +63,14 @@ enum IntegrationEventStatus {
   IGNORED
 }
 
+enum PurchaseOrderStatus {
+  DRAFT
+  ORDERED
+  PARTIALLY_RECEIVED
+  RECEIVED
+  CANCELLED
+}
+
 model ComponentFamily {
   id         String   @id @default(cuid())
   name       String   @unique
@@ -92,6 +100,8 @@ model Sku {
   approvedBomSkus    ApprovedBomSku[]
   unitComponents     UnitComponent[]
   configurationRules ShopifyConfigurationRule[]
+  supplierSkus       SupplierSku[]
+  purchaseOrderLines PurchaseOrderLine[]
 }
 
 model SkuBarcode {
@@ -102,6 +112,76 @@ model SkuBarcode {
   kind      String?
   isPrimary Boolean  @default(false)
   createdAt DateTime @default(now())
+
+  @@index([skuId])
+}
+
+model Supplier {
+  id            String          @id @default(cuid())
+  code          String          @unique
+  name          String
+  email         String?
+  phone         String?
+  website       String?
+  accountNumber String?
+  notes         String?
+  active        Boolean         @default(true)
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+  supplierSkus  SupplierSku[]
+  purchaseOrders PurchaseOrder[]
+}
+
+model SupplierSku {
+  id             String   @id @default(cuid())
+  supplierId     String
+  supplier       Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  skuId          String
+  sku            Sku      @relation(fields: [skuId], references: [id], onDelete: Cascade)
+  supplierCode   String?
+  unitCost       Decimal? @db.Decimal(12, 2)
+  currency       String   @default("NZD")
+  preferred      Boolean  @default(false)
+  leadTimeDays   Int?
+  minOrderQty    Int?
+  lastQuotedAt   DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([supplierId, skuId])
+  @@index([skuId, preferred])
+}
+
+model PurchaseOrder {
+  id             String              @id @default(cuid())
+  number         String              @unique
+  supplierId     String
+  supplier       Supplier            @relation(fields: [supplierId], references: [id])
+  status         PurchaseOrderStatus @default(DRAFT)
+  currency       String              @default("NZD")
+  supplierRef    String?
+  notes          String?
+  orderedAt      DateTime?
+  expectedAt     DateTime?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+  lines          PurchaseOrderLine[]
+
+  @@index([supplierId, status])
+}
+
+model PurchaseOrderLine {
+  id              String        @id @default(cuid())
+  purchaseOrderId String
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  skuId           String
+  sku             Sku           @relation(fields: [skuId], references: [id])
+  supplierCode    String?
+  quantityOrdered Int
+  quantityReceived Int          @default(0)
+  unitCost        Decimal       @db.Decimal(12, 2)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
 
   @@index([skuId])
 }
