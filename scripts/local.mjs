@@ -28,6 +28,19 @@ try {
   if (process.env.ERP_TEST_MODE === 'true') run(process.execPath, ['--import', 'tsx', 'prisma/seed.ts']);
   run('npm', ['run', 'build']);
   const server = spawn(process.execPath, ['apps/api/dist/server.js'], { stdio: 'inherit', env: process.env });
+  if (process.env.ERP_LAUNCHER_CHECK === 'true') {
+    const origin = 'http://localhost:' + (process.env.API_PORT ?? 4000);
+    let ready = false;
+    for (let i = 0; i < 60; i++) { try { if ((await fetch(origin + '/health')).ok) { ready = true; break; } } catch {} await new Promise(r => setTimeout(r, 500)); }
+    if (!ready) { server.kill(); throw new Error('Server health check failed'); }
+    const index = await fetch(origin); if (!index.ok || !(await index.text()).includes('Godmode Ops')) throw new Error('Dashboard was not served');
+    const login = await fetch(origin + '/api/auth/login', { method: 'POST', headers: { 'content-type': 'application/json', origin }, body: JSON.stringify({ email: process.env.ADMIN_EMAIL, password: process.env.ADMIN_PASSWORD }) });
+    if (!login.ok) throw new Error('Generated test administrator cannot sign in');
+    const cookie = login.headers.get('set-cookie').split(';')[0];
+    const builds = await fetch(origin + '/api/builds', { headers: { cookie } });
+    if (!builds.ok || (await builds.json()).length < 3) throw new Error('Demo builds are missing');
+    console.log('Launcher HTTP checks passed'); server.kill(); if (pg) await pg.stop(); process.exit(0);
+  }
   console.log('\nGodmode Ops: http://localhost:' + (process.env.API_PORT ?? 4000));
   if (existsSync('.data/test-login.txt')) console.log(readFileSync('.data/test-login.txt', 'utf8'));
   console.log('Keep this window open. Your test data is saved between sessions.');
