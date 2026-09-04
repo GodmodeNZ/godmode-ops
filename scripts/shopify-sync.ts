@@ -1,0 +1,35 @@
+import {PrismaClient,Prisma} from '@prisma/client';
+
+const db=new PrismaClient();
+const shop=(process.env.SHOPIFY_STORE_DOMAIN??'').replace(/^https?:\/\//,'').replace(/\/$/,'');
+const token=process.env.SHOPIFY_ADMIN_ACCESS_TOKEN??'';
+const version=process.env.SHOPIFY_API_VERSION??'2026-07';
+if(!shop||!token)throw new Error('Set SHOPIFY_STORE_DOMAIN and SHOPIFY_ADMIN_ACCESS_TOKEN in .env');
+
+type Variant={id:string;title:string;sku:string|null;price:string;inventoryQuantity:number};
+type Product={id:string;title:string;handle:string;status:string;productType:string;vendor:string;tags:string[];variants:{nodes:Variant[]}};
+
+const query=`query Products($after:String){products(first:100,after:$after,query:"status:active"){nodes{id title handle status productType vendor tags variants(first:100){nodes{id title sku price inventoryQuantity}}}pageInfo{hasNextPage endCursor}}}`;
+async function gql(after:string|null){const r=await fetch(`https://${shop}/admin/api/${version}/graphql.json`,{method:'POST',headers:{'content-type':'application/json','X-Shopify-Access-Token':token},body:JSON.stringify({query,variables:{after}})});const j:any=await r.json();if(!r.ok||j.errors)throw new Error(JSON.stringify(j.errors??j));return j.data.products as {nodes:Product[];pageInfo:{hasNextPage:boolean;endCursor:string|null}}}
+const numeric=(gid:string)=>gid.split('/').pop()!;
+const cleanCode=(s:string)=>s.toUpperCase().replace(/[^A-Z0-9]+/g,'-').replace(/^-|-$/g,'').slice(0,80);
+const isBuilder=(p:Product)=>p.tags.includes('builder-component')||p.tags.includes('internal-component')||p.productType.startsWith('Builder');
+const category=(p:Product,v:Variant)=>{const t=(p.productType+' '+(v.sku??'')+' '+p.title).toUpperCase();for(const x of ['CPU','GPU','RAM','SSD','MOTHERBOARD','COOLER','CASE','PSU','WARRANTY'])if(t.includes(x))return x;return 'COMPONENT'};
+
+async function main(){let after:null|string=null,products:Product[]=[];do{const page=await gql(after);products.push(...page.nodes);after=page.pageInfo.hasNextPage?page.pageInfo.endCursor:null}while(after);
+ let pcs=0,components=0,variants=0,mappings=0;
+ for(const p of products){
+  if(p.productType==='Gaming PC'){
+   const code=cleanCode(p.title||p.handle)||`SHOPIFY-PC-${numeric(p.id)}`;
+   const gp=await db.product.upsert({where:{code},update:{name:p.title,active:true},create:{code,name:p.title}});pcs++;
+   const existing=await db.shopifyProductMapping.findFirst({where:{shopifyProductId:numeric(p.id),shopifyVariantId:null,productId:gp.id}});
+   if(!existing){await db.shopifyProductMapping.create({data:{shopDomain:shop,shopifyProductId:numeric(p.id),productId:gp.id,priority:50}});mappings++}
+   for(const v of p.variants.nodes){const vm=await db.shopifyProductMapping.findFirst({where:{shopifyVariantId:numeric(v.id),productId:gp.id}});if(!vm){await db.shopifyProductMapping.create({data:{shopDomain:shop,shopifyProductId:numeric(p.id),shopifyVariantId:numeric(v.id),sku:v.sku||undefined,productId:gp.id,priority:10}});mappings++}}
+   continue;
+  }
+  if(!isBuilder(p))continue;
+  for(const v of p.variants.nodes){const cat=category(p,v);const family=await db.componentFamily.upsert({where:{name:p.title},update:{category:cat,attributes:{shopifyProductId:numeric(p.id),productType:p.productType,tags:p.tags} as Prisma.InputJsonValue},create:{name:p.title,category:cat,attributes:{shopifyProductId:numeric(p.id),productType:p.productType,tags:p.tags} as Prisma.InputJsonValue}});const code=(v.sku&&v.sku.trim())||`SHOPIFY-VARIANT-${numeric(v.id)}`;await db.sku.upsert({where:{code},update:{name:p.title,familyId:family.id,active:true,attributes:{shopifyProductId:numeric(p.id),shopifyVariantId:numeric(v.id),variantTitle:v.title,price:v.price,shopifyInventory:v.inventoryQuantity,vendor:p.vendor,handle:p.handle,tags:p.tags} as Prisma.InputJsonValue},create:{code,name:p.title,familyId:family.id,attributes:{shopifyProductId:numeric(p.id),shopifyVariantId:numeric(v.id),variantTitle:v.title,price:v.price,shopifyInventory:v.inventoryQuantity,vendor:p.vendor,handle:p.handle,tags:p.tags} as Prisma.InputJsonValue}});variants++}components++;
+ }
+ console.log(`Shopify sync complete: ${products.length} active products scanned, ${pcs} gaming PCs, ${components} builder products, ${variants} component variants, ${mappings} new mappings.`);
+}
+main().catch(e=>{console.error(e);process.exitCode=1}).finally(()=>db.$disconnect());
