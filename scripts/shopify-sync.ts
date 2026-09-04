@@ -14,15 +14,7 @@ if(!legacyToken&&(!clientId||!clientSecret))throw new Error('Set SHOPIFY_CLIENT_
 
 async function readJson(r:Response,label:string){const text=await r.text();let j:any;try{j=JSON.parse(text)}catch{throw new Error(`${label} returned HTTP ${r.status} ${r.statusText}, content-type ${r.headers.get('content-type')??'unknown'}: ${text.slice(0,500)}`)}return j}
 let cachedToken='';
-async function accessToken(){
- if(legacyToken)return legacyToken;
- if(cachedToken)return cachedToken;
- const r=await fetch(`https://${shop}/admin/oauth/access_token`,{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({grant_type:'client_credentials',client_id:clientId,client_secret:clientSecret})});
- const j:any=await readJson(r,'Shopify token endpoint');
- if(!r.ok||!j.access_token)throw new Error(`Shopify authentication failed (${r.status}): ${JSON.stringify(j)}`);
- cachedToken=j.access_token;
- return cachedToken;
-}
+async function accessToken(){if(legacyToken)return legacyToken;if(cachedToken)return cachedToken;const r=await fetch(`https://${shop}/admin/oauth/access_token`,{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({grant_type:'client_credentials',client_id:clientId,client_secret:clientSecret})});const j:any=await readJson(r,'Shopify token endpoint');if(!r.ok||!j.access_token)throw new Error(`Shopify authentication failed (${r.status}): ${JSON.stringify(j)}`);cachedToken=j.access_token;return cachedToken}
 
 type Variant={id:string;title:string;sku:string|null;price:string;inventoryQuantity:number};
 type Product={id:string;title:string;handle:string;status:string;productType:string;vendor:string;tags:string[];variants:{nodes:Variant[]}};
@@ -32,30 +24,30 @@ const numeric=(gid:string)=>gid.split('/').pop()!;
 const cleanCode=(s:string)=>s.toUpperCase().replace(/[^A-Z0-9]+/g,'-').replace(/^-|-$/g,'').slice(0,80);
 const isBuilder=(p:Product)=>p.tags.includes('builder-component')||p.tags.includes('internal-component')||p.productType.startsWith('Builder');
 const category=(p:Product,v:Variant)=>{const t=(p.productType+' '+(v.sku??'')+' '+p.title).toUpperCase();for(const x of ['CPU','GPU','RAM','SSD','MOTHERBOARD','COOLER','CASE','PSU','WARRANTY'])if(t.includes(x))return x;return 'COMPONENT'};
+const keyTitle=(s:string)=>s.trim().toLowerCase().replace(/\s+/g,' ');
 
 async function main(){console.log(`Shopify shop: ${shop}`);let after:null|string=null,products:Product[]=[];do{const page=await gql(after);products.push(...page.nodes);after=page.pageInfo.hasNextPage?page.pageInfo.endCursor:null}while(after);
  const pcProducts=products.filter(p=>p.productType==='Gaming PC');
  const builderProducts=products.filter(p=>p.productType!=='Gaming PC'&&isBuilder(p));
  const builderVariants=builderProducts.flatMap(p=>p.variants.nodes.map(v=>({p,v,cat:category(p,v)})));
  const byCategory=Object.entries(builderVariants.reduce<Record<string,number>>((a,x)=>{a[x.cat]=(a[x.cat]??0)+1;return a},{})).sort((a,b)=>a[0].localeCompare(b[0]));
+ const ambiguous=builderVariants.filter(x=>x.cat==='COMPONENT');
+ const missingSku=builderVariants.filter(x=>!x.v.sku?.trim());
+ const byTitle=new Map<string,Product[]>();for(const p of builderProducts){const k=keyTitle(p.title);byTitle.set(k,[...(byTitle.get(k)??[]),p])}
+ const dupGroups=[...byTitle.values()].filter(g=>g.length>1);
  console.log(`Shopify catalogue scan: ${products.length} active products`);
  console.log(`Gaming PCs: ${pcProducts.length} -> ${pcProducts.map(p=>p.title).join(', ')||'none'}`);
  console.log(`Builder products: ${builderProducts.length}; component variants: ${builderVariants.length}`);
  console.log(`Categories: ${byCategory.map(([k,v])=>`${k}=${v}`).join(', ')}`);
+ console.log(`Missing SKU variants: ${missingSku.length}`);
+ console.log(`Duplicate builder titles: ${dupGroups.length}`);
+ if(dupGroups.length)console.log('Duplicate examples:\n'+dupGroups.slice(0,20).map(g=>`  - ${g[0].title} :: ${g.map(p=>`${p.productType||'no type'} [${numeric(p.id)}]`).join(' | ')}`).join('\n'));
+ console.log(`Ambiguous COMPONENT variants: ${ambiguous.length}`);
+ if(ambiguous.length)console.log('Ambiguous components:\n'+ambiguous.slice(0,50).map(x=>`  - ${x.p.title} :: type=${x.p.productType||'none'} :: sku=${x.v.sku||'none'}`).join('\n'));
  if(!write){console.log('DRY RUN ONLY — no ERP records changed. Re-run with: npm run shopify:sync -- --write');return}
+ if(ambiguous.length||dupGroups.length)throw new Error('Write blocked: catalogue still contains ambiguous or duplicate builder products. Clean classification rules before importing.');
  let pcs=0,components=0,variants=0,mappings=0;
- for(const p of products){
-  if(p.productType==='Gaming PC'){
-   const code=cleanCode(p.title||p.handle)||`SHOPIFY-PC-${numeric(p.id)}`;
-   const gp=await db.product.upsert({where:{code},update:{name:p.title,active:true},create:{code,name:p.title}});pcs++;
-   const existing=await db.shopifyProductMapping.findFirst({where:{shopifyProductId:numeric(p.id),shopifyVariantId:null,productId:gp.id}});
-   if(!existing){await db.shopifyProductMapping.create({data:{shopDomain:shop,shopifyProductId:numeric(p.id),productId:gp.id,priority:50}});mappings++}
-   for(const v of p.variants.nodes){const vm=await db.shopifyProductMapping.findFirst({where:{shopifyVariantId:numeric(v.id),productId:gp.id}});if(!vm){await db.shopifyProductMapping.create({data:{shopDomain:shop,shopifyProductId:numeric(p.id),shopifyVariantId:numeric(v.id),sku:v.sku||undefined,productId:gp.id,priority:10}});mappings++}}
-   continue;
-  }
-  if(!isBuilder(p))continue;
-  for(const v of p.variants.nodes){const cat=category(p,v);const family=await db.componentFamily.upsert({where:{name:p.title},update:{category:cat,attributes:{shopifyProductId:numeric(p.id),productType:p.productType,tags:p.tags} as Prisma.InputJsonValue},create:{name:p.title,category:cat,attributes:{shopifyProductId:numeric(p.id),productType:p.productType,tags:p.tags} as Prisma.InputJsonValue}});const code=(v.sku&&v.sku.trim())||`SHOPIFY-VARIANT-${numeric(v.id)}`;await db.sku.upsert({where:{code},update:{name:p.title,familyId:family.id,active:true,attributes:{shopifyProductId:numeric(p.id),shopifyVariantId:numeric(v.id),variantTitle:v.title,price:v.price,shopifyInventory:v.inventoryQuantity,vendor:p.vendor,handle:p.handle,tags:p.tags} as Prisma.InputJsonValue},create:{code,name:p.title,familyId:family.id,attributes:{shopifyProductId:numeric(p.id),shopifyVariantId:numeric(v.id),variantTitle:v.title,price:v.price,shopifyInventory:v.inventoryQuantity,vendor:p.vendor,handle:p.handle,tags:p.tags} as Prisma.InputJsonValue}});variants++}components++;
- }
+ for(const p of products){if(p.productType==='Gaming PC'){const code=cleanCode(p.title||p.handle)||`SHOPIFY-PC-${numeric(p.id)}`;const gp=await db.product.upsert({where:{code},update:{name:p.title,active:true},create:{code,name:p.title}});pcs++;const existing=await db.shopifyProductMapping.findFirst({where:{shopifyProductId:numeric(p.id),shopifyVariantId:null,productId:gp.id}});if(!existing){await db.shopifyProductMapping.create({data:{shopDomain:shop,shopifyProductId:numeric(p.id),productId:gp.id,priority:50}});mappings++}for(const v of p.variants.nodes){const vm=await db.shopifyProductMapping.findFirst({where:{shopifyVariantId:numeric(v.id),productId:gp.id}});if(!vm){await db.shopifyProductMapping.create({data:{shopDomain:shop,shopifyProductId:numeric(p.id),shopifyVariantId:numeric(v.id),sku:v.sku||undefined,productId:gp.id,priority:10}});mappings++}}continue}if(!isBuilder(p))continue;for(const v of p.variants.nodes){const cat=category(p,v);const family=await db.componentFamily.upsert({where:{name:p.title},update:{category:cat,attributes:{shopifyProductId:numeric(p.id),productType:p.productType,tags:p.tags} as Prisma.InputJsonValue},create:{name:p.title,category:cat,attributes:{shopifyProductId:numeric(p.id),productType:p.productType,tags:p.tags} as Prisma.InputJsonValue}});const code=(v.sku&&v.sku.trim())||`SHOPIFY-VARIANT-${numeric(v.id)}`;await db.sku.upsert({where:{code},update:{name:p.title,familyId:family.id,active:true,attributes:{shopifyProductId:numeric(p.id),shopifyVariantId:numeric(v.id),variantTitle:v.title,price:v.price,shopifyInventory:v.inventoryQuantity,vendor:p.vendor,handle:p.handle,tags:p.tags} as Prisma.InputJsonValue},create:{code,name:p.title,familyId:family.id,attributes:{shopifyProductId:numeric(p.id),shopifyVariantId:numeric(v.id),variantTitle:v.title,price:v.price,shopifyInventory:v.inventoryQuantity,vendor:p.vendor,handle:p.handle,tags:p.tags} as Prisma.InputJsonValue}});variants++}components++}
  console.log(`WRITE COMPLETE: ${pcs} gaming PCs, ${components} builder products, ${variants} component variants, ${mappings} new Shopify mappings.`);
 }
 main().catch(e=>{console.error(e);process.exitCode=1}).finally(()=>db.$disconnect());
