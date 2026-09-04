@@ -10,7 +10,8 @@
     "prisma:studio": "prisma studio",
     "seed": "tsx prisma/seed.ts",
     "shopify:sync": "tsx scripts/shopify-sync.ts",
-    "procurement:smoke": "tsx scripts/procurement-smoke.ts"
+    "procurement:smoke": "tsx scripts/procurement-smoke.ts",
+    "procurement:plan": "tsx scripts/procurement-plan.ts"
   },
   "devDependencies": {
     "prisma": "^6.15.0",
