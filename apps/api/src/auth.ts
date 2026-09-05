@@ -38,7 +38,7 @@ export async function registerAuth(app: FastifyInstance, db: PrismaClient) {
   });
   app.post('/auth/login', async (q, r) => {
     ensure(!q.headers.origin || q.headers.origin === process.env.WEB_ORIGIN, 'Request origin is not allowed', 403);
-    const b = z.object({ email: z.string().email(), password: z.string().max(512) }).parse(q.body);
+    const b = z.object({ email: z.string().email(), password: z.string().max(512), rememberMe: z.boolean().default(false) }).parse(q.body);
     const key = q.ip, now = Date.now(), fail = failures.get(key);
     ensure(!fail || fail.until < now || fail.count < 8, 'Too many sign-in attempts. Try again in 15 minutes.', 429);
     const user = await db.user.findUnique({ where: { email: b.email.toLowerCase() } });
@@ -48,10 +48,11 @@ export async function registerAuth(app: FastifyInstance, db: PrismaClient) {
       return r.code(401).send({ error: 'Email or password is incorrect' });
     }
     failures.delete(key);
+    const sessionSeconds = b.rememberMe ? 30 * 24 * 60 * 60 : 12 * 60 * 60;
     const token = randomBytes(32).toString('hex');
     await db.session.deleteMany({ where: { expiresAt: { lt: new Date() } } });
-    await db.session.create({ data: { tokenHash: digest(token), userId: user.id, expiresAt: new Date(now + 43200000) } });
-    return r.header('set-cookie', cookie(token, 43200)).send(publicUser(user));
+    await db.session.create({ data: { tokenHash: digest(token), userId: user.id, expiresAt: new Date(now + sessionSeconds * 1000) } });
+    return r.header('set-cookie', cookie(token, sessionSeconds)).send(publicUser(user));
   });
   app.get('/auth/me', async q => (q as any).user);
   app.post('/auth/logout', async (q, r) => {
