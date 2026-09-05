@@ -7,7 +7,7 @@ import { catalogueQuery, connectionQuery, shopifyConfig, shopifyGraphql } from '
 export const normalize = (s: string | null | undefined) => (s ?? '').normalize('NFKC').trim().toUpperCase().replace(/\s+/g, ' ');
 const id = z.string().min(1).max(200);
 const domain = z.string().trim().toLowerCase().regex(/^[a-z0-9][a-z0-9-]*\.myshopify\.com$/);
-export const catalogueSchema = z.object({ shopDomain: domain, exportedAt: z.string().datetime(), complete: z.boolean().default(false), variants: z.array(z.object({ id, title: z.string(), sku: z.string().nullable(), barcode: z.string().nullable(), product: z.object({ id, title: z.string(), handle: z.string(), productType: z.string(), vendor: z.string(), status: z.enum(['ACTIVE','DRAFT','ARCHIVED']) }) })).max(20000) });
+export const catalogueSchema = z.object({ shopDomain: domain, exportedAt: z.string().datetime(), complete: z.boolean().default(false), variants: z.array(z.object({ id, title: z.string(), sku: z.string().nullable(), barcode: z.string().nullable(), product: z.object({ id, title: z.string(), handle: z.string(), productType: z.string(), vendor: z.string(), status: z.enum(['ACTIVE','DRAFT','ARCHIVED','UNLISTED']) }) })).max(20000) });
 export async function importCatalogue(tx: Tx, b: z.infer<typeof catalogueSchema>) {
   ensure(new Set(b.variants.map(v => v.id)).size === b.variants.length, 'Duplicate Shopify variant IDs', 400);
   const latest = await tx.shopifyCatalogVariant.findFirst({ where: { shopDomain: b.shopDomain }, orderBy: { syncedAt: 'desc' } });
