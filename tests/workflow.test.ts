@@ -112,6 +112,12 @@ await test('Godmode operational workflow and integrity', async t => {
     await db.integrationEvent.create({ data: { provider: 'SHOPIFY', externalEventId: eventId, topic: 'orders-paid', status: 'FAILED', error: 'Temporary test failure' } });
     const first = await app.inject({ method: 'POST', url: '/api/integrations/shopify/webhooks/orders-paid', headers, payload: raw }); assert.equal(first.statusCode, 200, first.body);
     const second = await app.inject({ method: 'POST', url: '/api/integrations/shopify/webhooks/orders-paid', headers, payload: raw }); assert.equal(second.json().deduplicated, true);
+    const savedEvent = await db.integrationEvent.findUniqueOrThrow({ where: { provider_externalEventId: { provider: 'SHOPIFY', externalEventId: eventId } } });
+    assert.equal(savedEvent.shopDomain, 'test.myshopify.com');
+    await db.integrationEvent.update({ where: { id: savedEvent.id }, data: { status: 'FAILED' } });
+    delete process.env.SHOPIFY_STORE_DOMAIN;
+    await call('/integrations/events/' + savedEvent.id + '/retry', {});
+    process.env.SHOPIFY_STORE_DOMAIN = 'test.myshopify.com';
     process.env.ERP_TEST_MODE = 'true';
   });
   await t.test('read-only role, cross-origin writes and anonymous factory access are denied', async () => {
