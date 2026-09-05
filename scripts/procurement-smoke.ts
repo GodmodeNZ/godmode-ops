@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import {Prisma,PrismaClient,TrackingMode} from '@prisma/client';
 
+if(process.env.ERP_TEST_MODE!=='true')throw Error('Legacy smoke checks are restricted to a test database. Use npm test for the full suite.');
 const db=new PrismaClient();
 const money=(n:number)=>new Prisma.Decimal(n);
 
