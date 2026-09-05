@@ -22,3 +22,7 @@ The test database persists between sessions. Re-running the launcher does not re
 The suite checks authentication, rejected origins, viewer access, barcode lookup, BOM validation, serialized receiving, duplicate receipts, PO receipt bounds, inventory reservations, concurrent allocation of the final serial, immutable ledger, QA gates, completion cost/serial history, transfers, service/dispatch, Shopify replay safety, paid-order gating, changed orders, signed webhooks and failed-event replay.
 
 A PostgreSQL 17 service is configured in `.github/workflows/ci.yml`. Compilation is checked for both API and frontend. A second job runs the Windows launcher twice: fresh database setup, migrations, sample data, build, authenticated HTTP checks, clean shutdown and restart with saved data. Browser interaction tests have not been performed; use the walkthrough above for hands-on acceptance testing.
+
+## Invoice and SKU matching acceptance
+
+Open SKU Matching and import the supplied catalogue JSON or connect Shopify and sync it. Find a part with a different invoice name, confirm its ERP link and add a supplier alias. Import an invoice, check each proposed match, change one, save and approve. Reimport the same file to verify duplicate protection. Confirm stock has not changed. Follow [the detailed invoice walkthrough](INVOICES.md) for email setup and a PO receiving cycle.

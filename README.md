@@ -16,6 +16,8 @@ The test environment is clearly labelled. Its stock, costs, supplier and PCs are
 
 See [the test walkthrough](docs/TESTING.md).
 
+Invoice import, supplier aliases and visible Shopify SKU matching are now available. See [invoice setup and matching](docs/INVOICES.md). To connect Shopify on Windows, run **Connect-Shopify.cmd**, sign in, then open **SKU Matching → Sync catalogue**. Keep `.env` and `.data` when copying updates.
+
 ## Included workflows
 
 - Component families, SKUs, product barcodes, serial-number stock, locations, safety stock and stock search.
@@ -28,6 +30,9 @@ See [the test walkthrough](docs/TESTING.md).
 - Permanent Godmode Unit IDs, as-built serial genealogy, component costs and dispatch records.
 - Service tickets linked to the manufactured unit and original build history.
 - Supplier quotes, PO drafts, shortages and replenishment grouped by supplier.
+- Invoice inbox with preserved source files, conservative PDF/CSV/email extraction, per-line SKU review and duplicate protection.
+- Explicit Shopify variant links, supplier aliases and frozen invoice match history.
+- Gmail/Microsoft 365 read-only mailbox connection and manual invoice pulls.
 - Stock valuation, finished-PC component costs, CSV exports and activity history.
 - Administrator, operator and viewer accounts with revocable sign-in sessions.
 - Controller endpoints for build allocations, detected hardware and deployment events.

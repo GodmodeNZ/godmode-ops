@@ -20,7 +20,7 @@ export async function registerAuth(app: FastifyInstance, db: PrismaClient) {
   const failures = new Map<string, { count: number; until: number }>();
   app.addHook('onRequest', async (q, r) => {
     const path = q.url.split('?')[0].replace(/^\/api(?=\/|$)/, '');
-    if (path === '/health' || path === '/auth/login' || path.startsWith('/integrations/shopify/webhooks/')) return;
+    if (path === '/health' || path === '/auth/login' || (q.method === 'GET' && path === '/mailbox/callback') || path.startsWith('/integrations/shopify/webhooks/')) return;
     if (path.startsWith('/factory/') && process.env.FACTORY_API_TOKEN) {
       const token = q.headers.authorization?.replace(/^Bearer /, '') ?? '';
       if (token && timingSafeEqual(Buffer.from(digest(token)), Buffer.from(digest(process.env.FACTORY_API_TOKEN)))) { (q as any).user = { email: 'controller', role: 'OPERATOR' }; return; }
@@ -33,7 +33,7 @@ export async function registerAuth(app: FastifyInstance, db: PrismaClient) {
       ensure(q.headers.origin === process.env.WEB_ORIGIN || (!q.headers.origin && process.env.NODE_ENV !== 'production'), 'Request origin is not allowed', 403);
       ensure(q.headers['content-type']?.startsWith('application/json'), 'Use application/json', 415);
       ensure(session.user.role !== 'VIEWER' || path === '/auth/logout', 'Your account has read-only access', 403);
-      if (/^\/(users|shopify\/mappings|integrations\/shopify\/sync|integrations\/events)/.test(path)) ensure(session.user.role === 'ADMIN', 'Administrator access required', 403);
+      if (/^\/(users|shopify\/mappings|matching|mailbox|integrations\/shopify\/sync|integrations\/events)/.test(path)) ensure(session.user.role === 'ADMIN', 'Administrator access required', 403);
     }
   });
   app.post('/auth/login', async (q, r) => {

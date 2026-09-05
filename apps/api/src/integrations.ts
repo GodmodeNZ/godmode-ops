@@ -1,3 +1,6 @@
+import { localShopifyConfig } from './shopify-local.js';
+import { shopifyGraphql, shopifyConfig } from './shopify-client.js';
+export { shopifyGraphql } from './shopify-client.js';
 import type { FastifyInstance } from 'fastify';
 import { PrismaClient } from '@prisma/client';
 import { z } from 'zod';
@@ -15,19 +18,6 @@ export const ordersQuery = `query OpsOrders($after: String) {
   } pageInfo { hasNextPage endCursor }
  }
 }`;
-export async function shopifyGraphql(query: string, variables: object) {
-  const shop = process.env.SHOPIFY_STORE_DOMAIN ?? '';
-  ensure(/^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(shop), 'Set a valid SHOPIFY_STORE_DOMAIN', 503);
-  let token = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN;
-  if (!token && process.env.SHOPIFY_CLIENT_ID && process.env.SHOPIFY_CLIENT_SECRET) {
-    const response = await fetch(`https://${shop}/admin/oauth/access_token`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ grant_type: 'client_credentials', client_id: process.env.SHOPIFY_CLIENT_ID, client_secret: process.env.SHOPIFY_CLIENT_SECRET }), signal: AbortSignal.timeout(15000) });
-    ensure(response.ok, `Shopify authentication failed (${response.status})`, 502); token = (await response.json() as any).access_token;
-  }
-  ensure(token, 'Shopify credentials have not been configured', 503);
-  const version = process.env.SHOPIFY_API_VERSION ?? '2026-07'; ensure(/^\d{4}-\d{2}$/.test(version), 'Invalid Shopify API version', 503);
-  const response = await fetch(`https://${shop}/admin/api/${version}/graphql.json`, { method: 'POST', headers: { 'content-type': 'application/json', 'X-Shopify-Access-Token': token }, body: JSON.stringify({ query, variables }), signal: AbortSignal.timeout(20000) });
-  const result = await response.json() as any; ensure(response.ok && !result.errors, `Shopify request failed: ${result.errors?.map((e: any) => e.message).join('; ') ?? response.status}`, 502); return result.data;
-}
 async function cancelOrder(tx: Tx, id: string) {
   const order = await tx.salesOrder.findUniqueOrThrow({ where: { id }, include: { lines: true } });
   for (const line of order.lines) {
@@ -66,15 +56,15 @@ export async function registerIntegrations(app: FastifyInstance, db: PrismaClien
     });
   });
   app.delete('/shopify/mappings/:id', async q => { const { id } = q.params as { id: string }; return mutate(db, q, 'Disable Shopify mapping', tx => tx.shopifyProductMapping.update({ where: { id }, data: { active: false } })); });
-  app.get('/integrations/status', async () => ({ shopify: { configured: Boolean(process.env.SHOPIFY_STORE_DOMAIN && (process.env.SHOPIFY_ADMIN_ACCESS_TOKEN || process.env.SHOPIFY_CLIENT_SECRET)), domain: process.env.SHOPIFY_STORE_DOMAIN ?? null, webhookConfigured: Boolean(process.env.SHOPIFY_WEBHOOK_SECRET) }, factoryConfigured: Boolean(process.env.FACTORY_API_TOKEN), testMode: process.env.ERP_TEST_MODE === 'true', events: await db.integrationEvent.findMany({ select: { id: true, topic: true, status: true, error: true, createdAt: true, processedAt: true }, orderBy: { createdAt: 'desc' }, take: 50 }) }));
+  app.get('/integrations/status', async () => { const saved = await db.integrationConnection.findUnique({ where: { provider: 'SHOPIFY' }, select: { metadata: true } }); const meta = (saved?.metadata ?? localShopifyConfig()) as any; return ({ shopify: { configured: Boolean(saved || meta || (process.env.SHOPIFY_STORE_DOMAIN && (process.env.SHOPIFY_ADMIN_ACCESS_TOKEN || process.env.SHOPIFY_CLIENT_SECRET))), domain: meta?.domain ?? process.env.SHOPIFY_STORE_DOMAIN ?? null, verifiedAt: meta?.verifiedAt ?? null, webhookConfigured: Boolean(process.env.SHOPIFY_WEBHOOK_SECRET) }, factoryConfigured: Boolean(process.env.FACTORY_API_TOKEN), testMode: process.env.ERP_TEST_MODE === 'true', events: await db.integrationEvent.findMany({ select: { id: true, topic: true, status: true, error: true, createdAt: true, processedAt: true }, orderBy: { createdAt: 'desc' }, take: 50 }) }); });
   app.post('/integrations/shopify/dry-run', async q => { const b = z.object({ shopDomain: text.optional(), order: orderSchema, locationId: text.optional() }).parse(q.body); return dryRunShopifyOrder(db, b.order, b.shopDomain, b.locationId); });
   app.post('/integrations/shopify/test-order', async q => { ensure(process.env.ERP_TEST_MODE === 'true', 'Test order import is disabled outside the test environment', 403); const b = z.object({ order: orderSchema, shopDomain: text.optional(), locationId: text.optional() }).parse(q.body); return mutate(db, q, 'Import test order', async tx => { const o = await upsertOrder(tx, b.order, b.shopDomain); return resolveOrder(tx, o.id, b.locationId); }); });
   app.post('/integrations/shopify/sync', async q => {
     ensure(process.env.ERP_TEST_MODE !== 'true', 'Live order import is disabled in the test environment', 403);
     const { locationId } = z.object({ locationId: text.optional() }).parse(q.body ?? {});
-    let after: string | null = null; const payloads: any[] = [];
+    let after: string | null = null; const payloads: any[] = []; const config = await shopifyConfig(db);
     do {
-      const data = await shopifyGraphql(ordersQuery, { after });
+      const data = await shopifyGraphql(ordersQuery, { after }, db);
       for (const o of data.orders.nodes) {
         ensure(!o.lineItems.pageInfo.hasNextPage, `${o.name} has more than 100 lines and needs a dedicated import`, 409);
         const number = (gid: string | undefined) => gid?.split('/').pop();
@@ -83,23 +73,24 @@ export async function registerIntegrations(app: FastifyInstance, db: PrismaClien
       after = data.orders.pageInfo.hasNextPage ? data.orders.pageInfo.endCursor : null;
       ensure(payloads.length <= 2000, 'More than 2,000 open orders; narrow the import window', 409);
     } while (after);
-    return mutate(db, q, 'Import Shopify open paid orders', async tx => { for (const payload of payloads) { const o = await upsertOrder(tx, payload, process.env.SHOPIFY_STORE_DOMAIN); if (payload.cancelled_at) await cancelOrder(tx, o.id); else if (o.status !== 'CANCELLED') await resolveOrder(tx, o.id, locationId); } return { imported: payloads.length }; });
+    return mutate(db, q, 'Import Shopify open paid orders', async tx => { for (const payload of payloads) { const o = await upsertOrder(tx, payload, config.domain); if (payload.cancelled_at) await cancelOrder(tx, o.id); else if (o.status !== 'CANCELLED') await resolveOrder(tx, o.id, locationId); } return { imported: payloads.length }; });
   });
   for (const topic of ['orders-paid', 'orders-cancelled', 'orders-updated']) app.post(`/integrations/shopify/webhooks/${topic}`, { config: { rawBody: true } }, async (q, r) => {
     ensure(process.env.ERP_TEST_MODE !== 'true', 'Live webhooks are disabled in the test environment', 403);
     const raw = (q as any).rawBody as Buffer | undefined;
     ensure(raw && verifyShopifyHmac(raw, q.headers['x-shopify-hmac-sha256'] as string, process.env.SHOPIFY_WEBHOOK_SECRET ?? ''), 'Invalid webhook signature', 401);
-    ensure(q.headers['x-shopify-shop-domain'] === process.env.SHOPIFY_STORE_DOMAIN, 'Unknown Shopify store', 401);
+    const webhookDomain = process.env.SHOPIFY_STORE_DOMAIN ?? (await shopifyConfig(db)).domain;
+    ensure(q.headers['x-shopify-shop-domain'] === webhookDomain, 'Unknown Shopify store', 401);
     const externalEventId = z.string().min(1).max(200).parse(q.headers['x-shopify-webhook-id']); const payload = orderSchema.parse(q.body);
     try {
       return await transaction(db, async tx => {
         const old = await tx.integrationEvent.findUnique({ where: { provider_externalEventId: { provider: 'SHOPIFY', externalEventId } } });
         if (old?.status === 'PROCESSED') return { ok: true, deduplicated: true };
-        const o = await upsertOrder(tx, payload, process.env.SHOPIFY_STORE_DOMAIN);
+        const o = await upsertOrder(tx, payload, webhookDomain);
         if (payload.cancelled_at || topic === 'orders-cancelled') await cancelOrder(tx, o.id);
         else if (payload.financial_status === 'paid' && o.status !== 'CANCELLED') await resolveOrder(tx, o.id, process.env.DEFAULT_INVENTORY_LOCATION_ID || undefined);
         else if (['refunded', 'voided'].includes(payload.financial_status ?? '')) await cancelOrder(tx, o.id);
-        const data = { topic, shopDomain: process.env.SHOPIFY_STORE_DOMAIN, payload: json(payload), status: 'PROCESSED' as const, processedAt: new Date(), error: null };
+        const data = { topic, shopDomain: webhookDomain, payload: json(payload), status: 'PROCESSED' as const, processedAt: new Date(), error: null };
         await tx.integrationEvent.upsert({ where: { provider_externalEventId: { provider: 'SHOPIFY', externalEventId } }, create: { provider: 'SHOPIFY', externalEventId, ...data }, update: data }); return { ok: true };
       });
     } catch (e) {

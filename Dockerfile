@@ -9,6 +9,7 @@ RUN npm ci
 COPY . .
 RUN npm run prisma:generate && npm run build
 ENV NODE_ENV=production API_PORT=4000
+RUN mkdir -p /app/.data && chown node:node /app/.data
 USER node
 EXPOSE 4000
 CMD ["sh", "-c", "npm run db:deploy && if [ \"$ERP_TEST_MODE\" = \"true\" ]; then npm run seed; fi && npm start"]

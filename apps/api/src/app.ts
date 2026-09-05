@@ -1,3 +1,6 @@
+import { registerMatching } from './matching.js';
+import { registerInvoices } from './invoices.js';
+import { registerMailbox } from './mailbox.js';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import rawBody from 'fastify-raw-body';
@@ -22,7 +25,7 @@ export async function buildApp(db: PrismaClient, logger = true) {
     await api.register(cors, { origin: process.env.WEB_ORIGIN ?? 'http://localhost:5173', credentials: true });
     await api.register(rawBody, { field: 'rawBody', global: false, encoding: false, runFirst: true });
     api.addHook('onRoute', options => { if (options.url.includes('/webhooks/')) options.config = { ...options.config, rawBody: true }; });
-    await registerAuth(api, db); await registerInventory(api, db); await registerProduction(api, db); await registerProcurementRoutes(api, db); await registerIntegrations(api, db);
+    await registerAuth(api, db); await registerInventory(api, db); await registerProduction(api, db); await registerProcurementRoutes(api, db); await registerIntegrations(api, db); await registerMatching(api, db); await registerInvoices(api, db); await registerMailbox(api, db);
     api.get('/audit', async () => db.auditLog.findMany({ orderBy: { createdAt: 'desc' }, take: 1000 }));
     api.get('/reports', async () => {
       const [skus, units, orders, plan] = await Promise.all([db.sku.findMany(), db.godmodeUnit.findMany({ include: { components: true, shipment: true, build: { include: { product: true } } } }), db.salesOrder.findMany({ include: { lines: true } }), purchasePlan(db)]);
