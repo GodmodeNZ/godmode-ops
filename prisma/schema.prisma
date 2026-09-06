@@ -102,6 +102,9 @@ model Sku {
   configurationRules ShopifyConfigurationRule[]
   supplierSkus       SupplierSku[]
   purchaseOrderLines PurchaseOrderLine[]
+  supplierAliases SupplierAlias[]
+  shopifyVariants ShopifyCatalogVariant[]
+  invoiceLines SupplierInvoiceLine[]
 }
 
 model SkuBarcode {
@@ -130,6 +133,8 @@ model Supplier {
   updatedAt     DateTime        @updatedAt
   supplierSkus  SupplierSku[]
   purchaseOrders PurchaseOrder[]
+  aliases SupplierAlias[]
+  invoices SupplierInvoice[]
 }
 
 model SupplierSku {
@@ -166,6 +171,7 @@ model PurchaseOrder {
   createdAt      DateTime            @default(now())
   updatedAt      DateTime            @updatedAt
   lines          PurchaseOrderLine[]
+  invoices       SupplierInvoice[]
 
   @@index([supplierId, status])
 }
@@ -349,6 +355,65 @@ model GodmodeUnit {
   createdAt   DateTime        @default(now())
   completedAt DateTime?
   components  UnitComponent[]
+  shipment    Shipment?
+  repairs     RepairTicket[]
+}
+
+model User {
+  id String @id @default(cuid())
+  email String @unique
+  name String
+  passwordHash String
+  role String @default("OPERATOR")
+  active Boolean @default(true)
+  createdAt DateTime @default(now())
+  sessions Session[]
+}
+
+model Session {
+  tokenHash String @id
+  userId String
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  @@index([expiresAt])
+}
+
+model Operation {
+  key String @id
+  fingerprint String
+  result Json
+  createdAt DateTime @default(now())
+}
+
+model AuditLog {
+  id String @id @default(cuid())
+  actor String
+  action String
+  reference String?
+  createdAt DateTime @default(now())
+  @@index([createdAt])
+}
+
+model Shipment {
+  id String @id @default(cuid())
+  unitId String @unique
+  unit GodmodeUnit @relation(fields: [unitId], references: [id])
+  carrier String
+  trackingNumber String
+  dispatchedBy String
+  dispatchedAt DateTime @default(now())
+}
+
+model RepairTicket {
+  id String @id @default(cuid())
+  number String @unique
+  unitId String
+  unit GodmodeUnit @relation(fields: [unitId], references: [id])
+  issue String
+  status String @default("OPEN")
+  resolution String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model UnitComponent {
@@ -466,4 +531,110 @@ model IntegrationEvent {
 
   @@unique([provider, externalEventId])
   @@index([provider, topic, createdAt])
+}
+
+
+model IntegrationConnection {
+  provider String @id
+  encrypted String
+  metadata Json
+  updatedAt DateTime @updatedAt
+}
+
+model ShopifyCatalogVariant {
+  id String @id @default(cuid())
+  shopDomain String
+  variantId String
+  productId String
+  productTitle String
+  variantTitle String
+  handle String
+  vendor String
+  productType String
+  status String
+  shopifySku String?
+  barcode String?
+  skuId String?
+  sku Sku? @relation(fields: [skuId], references: [id])
+  matchMethod String?
+  confirmedBy String?
+  confirmedAt DateTime?
+  present Boolean @default(true)
+  syncedAt DateTime @default(now())
+  @@unique([shopDomain, variantId])
+  @@index([skuId])
+}
+
+model SupplierAlias {
+  id String @id @default(cuid())
+  supplierId String
+  supplier Supplier @relation(fields: [supplierId], references: [id])
+  kind String
+  key String
+  value String
+  skuId String
+  sku Sku @relation(fields: [skuId], references: [id])
+  confirmedBy String
+  updatedAt DateTime @updatedAt
+  @@unique([supplierId, kind, key])
+}
+
+model SupplierInvoice {
+  id String @id @default(cuid())
+  fingerprint String @unique
+  source String
+  sourceRef String?
+  sender String?
+  subject String?
+  supplierId String?
+  supplier Supplier? @relation(fields: [supplierId], references: [id])
+  invoiceNumber String?
+  invoiceKey String? @unique
+  invoiceDate DateTime?
+  dueDate DateTime?
+  currency String @default("NZD")
+  subtotal Decimal? @db.Decimal(12,2)
+  tax Decimal? @db.Decimal(12,2)
+  freight Decimal? @db.Decimal(12,2)
+  total Decimal? @db.Decimal(12,2)
+  status String @default("REVIEW")
+  extractedText String
+  extractionWarnings Json
+  purchaseOrderId String?
+  purchaseOrder PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id])
+  approvedBy String?
+  approvedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  version Int @default(1)
+  lines SupplierInvoiceLine[]
+  files InvoiceFile[]
+}
+
+model SupplierInvoiceLine {
+  id String @id @default(cuid())
+  invoiceId String
+  invoice SupplierInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  position Int
+  description String
+  supplierCode String?
+  barcode String?
+  quantity Int?
+  unitCost Decimal? @db.Decimal(12,2)
+  lineTotal Decimal? @db.Decimal(12,2)
+  skuId String?
+  sku Sku? @relation(fields: [skuId], references: [id])
+  confirmed Boolean @default(false)
+  matchReason String?
+  matchSnapshot Json?
+  @@unique([invoiceId, position])
+}
+
+model InvoiceFile {
+  id String @id @default(cuid())
+  invoiceId String
+  invoice SupplierInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  filename String
+  contentType String
+  data Bytes
 }
