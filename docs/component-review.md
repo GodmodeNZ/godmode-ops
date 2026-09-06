@@ -15,3 +15,5 @@ Finished-PC variants are blocked from component links and SKU creation. Link the
 The additive migration creates `CatalogueCandidate`; existing columns and rows are not rewritten. Only an authenticated administrator can write review/import/mapping changes. Private CSV, invoice files, runtime databases and verification reports belong in ignored private storage, never Git.
 
 Tests cover repeated CSV headers, quoted descriptions, discarded quantities/costs, duplicate codes, missing identifiers, model/colour/capacity/pack conflicts, alias reuse, draft-only application, unchanged stock/costs and finished-PC separation. Existing invoice, currency, banking and operational tests remain part of the regression suite.
+
+When no component exists, the confirmation dialog offers explicit creation of a reviewed code/name/family. It rejects normalized duplicate codes and accepts no quantities or costs. Creating that identity does not confirm an invoice mapping; select it and review the mapping separately.

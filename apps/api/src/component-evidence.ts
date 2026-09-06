@@ -15,6 +15,8 @@ export function specificationConflicts(a: string, b: string) {
   return conflicts;
 }
 export function finishedPc(v: {productTitle:string;productType:string}) {
+  if(/^(PC|PCS|COMPUTERS|DESKTOPS|SYSTEMS)$/i.test(v.productType.trim()))return true;
+  if(/\b(PC CASE|COMPUTER CASE|PC COOLER|PC POWER SUPPLY)\b/i.test(v.productTitle)||/\b(CASES?|CHASSIS|MOTHERBOARDS?|MEMORY|RAM|COOLERS?|GRAPHICS CARDS?)\b/i.test(v.productType))return false;
   return /\b(GAMING PC|DESKTOP PC|CUSTOM PC|PREBUILT|PRE-BUILT|BUILT TO ORDER|COMPLETE PC|GAMING COMPUTER)\b/i.test(v.productTitle+' '+v.productType)||/^(PC|PCS|COMPUTERS|DESKTOPS|SYSTEMS)$/i.test(v.productType.trim());
 }
 // RFC-style quoted CSV, including embedded newlines. Only the two catalogue columns leave this parser.

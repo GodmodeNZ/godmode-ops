@@ -14,6 +14,7 @@ test('Similar names cannot hide colour, capacity, model and pack conflicts',()=>
  for(const [a,b] of [['SSD 1TB Black','SSD 2TB Black'],['Fan White','Fan Black'],['RTX 4070 Black','RTX 4080 Black'],['Fan 3 Pack','Fan Single'],['Memory 32GB Kit','Memory 32GB Single']])assert.ok(specificationConflicts(a,b).length,a);
  assert.deepEqual(specificationConflicts('SSD 1TB Black','SSD 1024GB Black'),[]);
  assert.equal(finishedPc({productTitle:'Gaming PC Colossus',productType:'Desktop'}),true);
+ assert.equal(finishedPc({productTitle:'Gaming PC Case White',productType:'Case'}),false);
 });
 test('Component review preserves stock/costs and approved invoices; imports and aliases are repeatable',async t=>{
  const db=new PrismaClient();process.env.NODE_ENV='test';process.env.WEB_ORIGIN='http://localhost:4000';const app=await buildApp(db,false);const tag=randomUUID();let cookie='';
@@ -23,6 +24,9 @@ test('Component review preserves stock/costs and approved invoices; imports and 
   cookie=String((await app.inject({method:'POST',url:'/api/auth/login',payload:{email:user.email,password:'synthetic-component-password'}})).headers['set-cookie']).split(';')[0];
   const family=await db.componentFamily.create({data:{name:tag,category:'SYNTHETIC'}});
   const a=await db.sku.create({data:{code:'A-'+tag,name:'Synthetic SSD 1TB Black',familyId:family.id}}),b=await db.sku.create({data:{code:'B-'+tag,name:'Synthetic SSD 2TB White',familyId:family.id}});
+  await post('create-component',{code:' '+a.code.toLowerCase()+' ',name:a.name,familyId:family.id,confirmed:true},409);
+  await post('create-component',{code:'C-'+tag,name:'Synthetic Fan',familyId:family.id,confirmed:true,quantity:999},400);
+  const created=await post('create-component',{code:'C-'+tag,name:'Synthetic Fan',familyId:family.id,confirmed:true});assert.equal(await db.inventoryTransaction.count({where:{skuId:created.id}}),0);
   const supplier=await db.supplier.create({data:{code:tag,name:'Synthetic vendor'}});
   const make=async(status:string)=>db.supplierInvoice.create({data:{fingerprint:randomUUID(),source:'SYNTHETIC',status,supplierId:supplier.id,currency:'NZD',total:50,extractedText:'synthetic',extractionWarnings:[],lines:{create:{position:0,description:a.name,supplierCode:'VENDOR-'+tag,quantity:1,unitCost:50,lineTotal:50}}},include:{lines:true}});
   const draft=await make('REVIEW'),approved=await make('APPROVED');const stock=await db.inventoryTransaction.count();
