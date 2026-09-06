@@ -1,6 +1,19 @@
 import { DomainError, ensure } from './core.js';
 
 export const AKAHU_SCOPES = 'ENDURING_CONSENT ACCOUNTS TRANSACTIONS';
+export function personalTestGate() {
+  ensure(process.env.AKAHU_PERSONAL_TEST === 'true'
+    && /^\/godmode_akahu_personal_test_\d+$/.test(new URL(process.env.DATABASE_URL!).pathname)
+    && process.env.WEB_ORIGIN === 'http://127.0.0.1:4001'
+    && process.env.API_HOST === '127.0.0.1'
+    && process.env.NODE_ENV === 'test', 'Personal-app testing requires the dedicated isolated database, loopback test server and disabled workers.', 409);
+}
+export function personalTestWindow(since: string, until: string) {
+  const start = new Date(since), end = new Date(until);
+  ensure(Number.isFinite(start.getTime()) && Number.isFinite(end.getTime()) && end > start
+    && end.getTime() - start.getTime() <= 7 * 86400000 && end <= new Date(), 'Choose a completed test window of at most seven days (end exclusive).', 400);
+  return { start, end };
+}
 export class AkahuError extends DomainError {
   constructor(public providerStatus: number, public retryAt?: Date) {
     super(providerStatus === 401 ? 'Akahu access expired or was revoked. Reconnect your bank.'
@@ -10,6 +23,8 @@ export class AkahuError extends DomainError {
   }
 }
 export function bankingGate(mode: string) {
+  if (mode === 'PERSONAL_TEST') { personalTestGate(); return; }
+  ensure(process.env.AKAHU_PERSONAL_TEST !== 'true', 'This instance only supports isolated personal-app testing.', 409);
   const database = new URL(process.env.DATABASE_URL!).pathname;
   if (mode === 'PRODUCTION') {
     ensure(process.env.AKAHU_COMMERCIAL_APPROVED === 'true', 'Full-app commercial approval is required. Ask the server administrator to enable AKAHU_COMMERCIAL_APPROVED after Akahu approval.', 409);
@@ -25,6 +40,10 @@ export function bankingCallback() {
   return uri;
 }
 export async function akahuRequest(config: any, path: string, method = 'GET', body?: any) {
+  if (config?.kind === 'PERSONAL_TEST' || process.env.AKAHU_PERSONAL_TEST === 'true') {
+    personalTestGate();
+    ensure(config?.kind === 'PERSONAL_TEST' && method === 'GET', 'Personal tests allow cached reads only. Refresh, OAuth and remote revocation are disabled.', 409);
+  }
   // Fixed host and an explicit read/revoke/refresh allowlist prevent payment calls and credential forwarding.
   ensure((method === 'GET' && (/^\/accounts(?:\?cursor=[^#]*)?$/.test(path) || /^\/accounts\/acc_[\w-]+\/transactions(?:\/pending)?(?:\?[^#]*)?$/.test(path)))
     || (method === 'POST' && (path === '/token' || /^\/refresh\/acc_[\w-]+$/.test(path)))

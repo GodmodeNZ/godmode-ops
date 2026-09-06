@@ -4,7 +4,7 @@ import type { PrismaClient } from '@prisma/client';
 import { z } from 'zod';
 import { actor, ensure, mutate, transaction } from './core.js';
 import { readConnection, saveConnection } from './connections.js';
-import { AKAHU_SCOPES, AkahuError, akahuRequest, bankingCallback, bankingGate } from './akahu-client.js';
+import { AKAHU_SCOPES, AkahuError, akahuRequest, bankingCallback, bankingGate, personalTestGate, personalTestWindow } from './akahu-client.js';
 import { bankFeed, bankIdle, loadBankAccounts, requestBankRefresh, runBankSync, startBankSync } from './banking-sync.js';
 import { registerReconciliation } from './bank-reconciliation.js';
 import { D } from './fx.js';
@@ -12,14 +12,29 @@ const digest = (s: string) => createHash('sha256').update(s).digest('hex');
 const cookie = (s: string, uri: string, age = 600) => `erp_bank_oauth=${s}; HttpOnly; SameSite=Lax; Path=/api/banking/callback; Max-Age=${age}${uri.startsWith('https:') ? '; Secure' : ''}`;
 
 export async function registerBanking(app: FastifyInstance, db: PrismaClient) {
+  if (process.env.AKAHU_PERSONAL_TEST === 'true') personalTestGate();
+  app.post('/banking/personal-test', { logLevel: 'silent' }, async q => {
+    personalTestGate();
+    const b = z.object({ appId: z.string().regex(/^app_token_[\w-]+$/).max(1000), userToken: z.string().regex(/^user_token_[\w-]+$/).max(1000), since: z.string().datetime(), until: z.string().datetime() }).strict().parse(q.body);
+    const window = personalTestWindow(b.since, b.until);
+    return mutate(db, q, 'Configure isolated personal-app cached-read test', async tx => {
+      const f = await bankFeed(tx); bankIdle(f);
+      ensure(!(await tx.bankSync.count({ where: { status: { in: ['RUNNING', 'FAILED'] } } })), 'Finish or cancel the previous import first.', 409);
+      ensure(f.status !== 'CONNECTED', 'Disconnect locally before replacing personal-test credentials.', 409);
+      await saveConnection(tx, 'AKAHU', { kind: 'PERSONAL_TEST', appId: b.appId, accessToken: b.userToken, since: b.since, until: b.until }, { configured: true });
+      await tx.bankFeed.update({ where: { id: f.id }, data: { mode: 'PERSONAL_TEST', status: 'CONNECTED', since: window.start, autoSync: false, error: null, nextRequestAt: null, version: { increment: 1 } } });
+      return { configured: true, message: 'Tokens encrypted locally. Load accounts to verify access, then select one BNZ account.' };
+    });
+  });
   app.get('/banking/status', async () => {
     const feed = await bankFeed(db), connection = await db.integrationConnection.findUnique({ where: { provider: 'AKAHU' }, select: { metadata: true } });
     const { leaseOwner, ...safeFeed } = feed;
-    return { ...safeFeed, configured: Boolean(connection), callbackUrl: bankingCallback(), commercialApproved: process.env.AKAHU_COMMERCIAL_APPROVED === 'true',
+    return { ...safeFeed, personalTestEnabled: process.env.AKAHU_PERSONAL_TEST === 'true', configured: Boolean(connection), callbackUrl: bankingCallback(), commercialApproved: process.env.AKAHU_COMMERCIAL_APPROVED === 'true',
       accounts: await db.bankAccount.findMany({ orderBy: { name: 'asc' } }),
       sync: await db.bankSync.findFirst({ orderBy: { startedAt: 'desc' }, select: { id: true, status: true, pages: true, imported: true, accountIndex: true, start: true, end: true, error: true, completedAt: true } }) };
   });
   app.post('/banking/configure', async q => {
+    ensure(process.env.AKAHU_PERSONAL_TEST !== 'true', 'Full-app configuration is disabled on the personal test instance.', 409);
     const b = z.object({ appId: z.string().regex(/^app_token_[\w-]+$/).optional(), appSecret: z.string().min(8).max(1000).optional(), mode: z.enum(['SANDBOX', 'PRODUCTION']), since: z.string().date() }).strict().parse(q.body);
     return mutate(db, q, 'Configure Akahu full-app banking (credentials encrypted)', async tx => {
       const f = await bankFeed(tx); bankIdle(f);
@@ -89,7 +104,9 @@ export async function registerBanking(app: FastifyInstance, db: PrismaClient) {
     return mutate(db, q, 'Select BNZ accounts for cached bank imports', async tx => {
       const f = await bankFeed(tx); bankingGate(f.mode); bankIdle(f); ensure(f.status === 'CONNECTED', 'Connect Akahu first', 409);
       ensure(!(await tx.bankSync.count({ where: { status: { in: ['RUNNING', 'FAILED'] } } })), 'Finish or cancel the pending import first.', 409);
-      const ids = [...new Set(b.ids)]; ensure((await tx.bankAccount.count({ where: { id: { in: ids }, eligible: true } })) === ids.length, 'Only eligible connected BNZ accounts can be selected.', 400);
+      const ids = [...new Set(b.ids)];
+      if (f.mode === 'PERSONAL_TEST') ensure(ids.length === 1 && !b.autoSync, 'Select exactly one BNZ account; scheduled syncing is disabled for personal tests.', 400);
+      ensure((await tx.bankAccount.count({ where: { id: { in: ids }, eligible: true } })) === ids.length, 'Only eligible connected BNZ accounts can be selected.', 400);
       await tx.bankAccount.updateMany({ data: { selected: false } }); await tx.bankAccount.updateMany({ where: { id: { in: ids } }, data: { selected: true } });
       await tx.bankFeed.update({ where: { id: f.id }, data: { autoSync: b.autoSync && ids.length > 0 } }); return { selected: ids.length };
     });
@@ -107,14 +124,16 @@ export async function registerBanking(app: FastifyInstance, db: PrismaClient) {
       const f = await bankFeed(tx); bankIdle(f); await tx.bankFeed.update({ where: { id: f.id }, data: { leaseOwner: owner, leaseUntil: new Date(Date.now() + 45000), autoSync: false } }); return readConnection(tx, 'AKAHU');
     });
     try {
-      if (c?.accessToken) { try { await akahuRequest(c, '/token', 'DELETE'); } catch (e) { if (!(e instanceof AkahuError && e.providerStatus === 401)) throw e; } }
+      if (c?.kind === 'PERSONAL_TEST') personalTestGate();
+      else if (c?.accessToken) { try { await akahuRequest(c, '/token', 'DELETE'); } catch (e) { if (!(e instanceof AkahuError && e.providerStatus === 401)) throw e; } }
       await transaction(db, async tx => {
         await tx.bankOAuthState.deleteMany(); await tx.bankSync.updateMany({ where: { status: { in: ['RUNNING', 'FAILED'] } }, data: { status: 'CANCELLED' } });
-        if (c) await saveConnection(tx, 'AKAHU', { appId: c.appId, appSecret: c.appSecret }, { configured: true });
+        if (c?.kind === 'PERSONAL_TEST') await tx.integrationConnection.deleteMany({ where: { provider: 'AKAHU' } });
+        else if (c) await saveConnection(tx, 'AKAHU', { appId: c.appId, appSecret: c.appSecret }, { configured: true });
         if (purgeUnallocated) await tx.bankTransaction.deleteMany({ where: { allocations: { none: {} } } });
         await tx.bankAccount.updateMany({ data: { selected: false, eligible: false, status: 'DISCONNECTED', pending: [] } });
         await tx.bankFeed.update({ where: { id: 'akahu' }, data: { status: 'DISCONNECTED', error: null, version: { increment: 1 }, leaseOwner: null, leaseUntil: null } });
-        await tx.auditLog.create({ data: { actor: actor(q), action: 'Revoke Akahu access and disconnect bank feeds', reference: purgeUnallocated ? 'Unallocated transactions removed; reconciliation evidence retained' : 'Reconciliation history retained' } });
+        await tx.auditLog.create({ data: { actor: actor(q), action: c?.kind === 'PERSONAL_TEST' ? 'Disconnect personal test locally and delete saved tokens' : 'Revoke Akahu access and disconnect bank feeds', reference: purgeUnallocated ? 'Unallocated transactions removed; reconciliation evidence retained' : 'Reconciliation history retained' } });
       }); return { disconnected: true };
     } catch {
       await db.bankFeed.update({ where: { id: 'akahu' }, data: { status: 'DISCONNECT_FAILED', error: 'Revocation could not be confirmed. Imports are stopped. Retry Disconnect, or revoke access at my.akahu.nz and retry.', leaseOwner: null, leaseUntil: null } });
@@ -139,7 +158,7 @@ export async function registerBanking(app: FastifyInstance, db: PrismaClient) {
     await runBankSync(db);
   };
   let timer: ReturnType<typeof setInterval> | undefined;
-  if (process.env.NODE_ENV !== 'test') {
+  if (process.env.NODE_ENV !== 'test' && process.env.AKAHU_PERSONAL_TEST !== 'true') {
     timer = setInterval(() => { if (!polling) polling = poll().catch(() => {}).finally(() => { polling = undefined; }); }, 10000); timer.unref();
   }
   app.addHook('onClose', async () => { if (timer) clearInterval(timer); await polling; });

@@ -4,7 +4,7 @@ import { PrismaClient } from '@prisma/client';
 import { ensure, json, transaction, type Tx } from './core.js';
 import { readConnection, saveConnection } from './connections.js';
 import { D, money } from './fx.js';
-import { AkahuError, akahuRequest, bankingGate, page } from './akahu-client.js';
+import { AkahuError, akahuRequest, bankingGate, page, personalTestWindow } from './akahu-client.js';
 
 export async function bankFeed(tx: PrismaClient | Tx) {
   return tx.bankFeed.upsert({ where: { id: 'akahu' }, create: { id: 'akahu', since: new Date(new Date().toISOString().slice(0, 10)) }, update: {} });
@@ -81,6 +81,12 @@ export async function startBankSync(db: PrismaClient) {
     const old = await tx.bankSync.findFirst({ where: { status: { in: ['RUNNING', 'FAILED'] } }, orderBy: { startedAt: 'desc' } });
     if (old) return old;
     const accounts = await tx.bankAccount.findMany({ where: { selected: true, eligible: true } }); ensure(accounts.length, 'Select eligible BNZ accounts first.', 400);
+    if (f.mode === 'PERSONAL_TEST') {
+      ensure(accounts.length === 1 && !f.autoSync, 'Personal tests require one account and disabled scheduling.', 409);
+      const c = await readConnection(tx, 'AKAHU');
+      const window = personalTestWindow(c.since, c.until);
+      return tx.bankSync.create({ data: { accountIds: accounts.map(a => a.id), start: new Date(window.start.getTime() - 1), end: new Date(window.end.getTime() - 1) } });
+    }
     // Reconcile the full selected history, so provider deletions and ID replacements are detected.
     return tx.bankSync.create({ data: { accountIds: accounts.map(a => a.id), start: new Date(f.since.getTime() - 1), end: new Date() } });
   });
@@ -96,12 +102,14 @@ export async function runBankSync(db: PrismaClient, maxPages = 3) {
       try {
         const p = page(await akahuRequest(c, '/accounts/' + account.id + '/transactions?' + query));
         ensure(!p.next || p.next !== job.cursor, 'Akahu repeated a transaction cursor. Retry this import.', 502);
-        const pending = p.next ? null : page(await akahuRequest(c, '/accounts/' + account.id + '/transactions/pending'));
+        // Personal tests remain inside their historical window and do not collect current pending activity.
+        const pending = p.next ? null : c.kind === 'PERSONAL_TEST' ? { items: [], next: null } : page(await akahuRequest(c, '/accounts/' + account.id + '/transactions/pending'));
         ensure(!pending?.next, 'Unexpected paginated pending response; no data was replaced.', 502);
         await transaction(db, async tx => {
           await assertLease(tx, owner);
           const current = await tx.bankSync.findUniqueOrThrow({ where: { id: job.id } }); ensure(current.cursor === job.cursor && current.accountIndex === job.accountIndex, 'Import progress changed', 409);
           for (const t of p.items) {
+            if (c.kind === 'PERSONAL_TEST') ensure(new Date(t.date) > job.start && new Date(t.date) <= job.end, 'Provider returned a transaction outside the test window; page rejected.', 502);
             ensure(/^trans_[\w-]+$/.test(t._id), 'Missing posted transaction ID', 502); const data = fields(t, account);
             const old = await tx.bankTransaction.findUnique({ where: { id: t._id }, include: { allocations: { where: { reversedAt: null } } } });
             ensure(!old || old.accountId === account.id, 'Provider transaction changed accounts. Review required.', 502);
@@ -123,6 +131,7 @@ export async function runBankSync(db: PrismaClient, maxPages = 3) {
   });
 }
 export async function requestBankRefresh(db: PrismaClient) {
+  ensure(process.env.AKAHU_PERSONAL_TEST !== 'true', 'Bank refresh is disabled for personal tests. Fetch cached transactions only.', 409);
   return bankLease(db, async (c, owner) => {
     const f = await bankFeed(db), rest = Math.max(15, Number(process.env.AKAHU_REFRESH_REST_MINUTES) || 15) * 60000;
     ensure(!f.lastRefreshAttempt || Date.now() - f.lastRefreshAttempt.getTime() >= rest, 'Manual bank refresh is cooling down. Fetch cached transactions instead.', 409);

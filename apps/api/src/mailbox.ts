@@ -68,6 +68,6 @@ export async function registerMailbox(app:FastifyInstance,db:PrismaClient){
       await transaction(db,async tx=>{const c=await readConnection(tx,'MAILBOX');if(!c?.autoImport)return;c.lastAutoAttempt=new Date().toISOString();c.lastAutoError=message;await saveConnection(tx,'MAILBOX',c,mailboxMetadata(c));});
     }
   };
-  app.addHook('onReady',async()=>{timer=setInterval(()=>{if(polling)return;polling=poll().catch(e=>app.log.error({err:e},'Automatic invoice import failed')).finally(()=>{polling=undefined;});},60000);timer.unref();});
+  app.addHook('onReady',async()=>{if(process.env.AKAHU_PERSONAL_TEST==='true')return;timer=setInterval(()=>{if(polling)return;polling=poll().catch(e=>app.log.error({err:e},'Automatic invoice import failed')).finally(()=>{polling=undefined;});},60000);timer.unref();});
   app.addHook('onClose',async()=>{if(timer)clearInterval(timer);await polling;});
 }
