@@ -31,6 +31,25 @@ export async function registerInvoices(app:FastifyInstance,db:PrismaClient){
   app.post('/invoices/upload',{bodyLimit:12*1024*1024},async q=>{const b=z.object({filename:z.string().min(1).max(200),base64:z.string().max(12*1024*1024)}).parse(q.body),bytes=Buffer.from(b.base64,'base64');const document=await extractDocument(bytes,b.filename);return mutate(db,q,'Import supplier invoice',tx=>ingestInvoice(tx,bytes,b.filename,document));});
   app.get('/invoices/:id',async q=>{const invoice=await db.supplierInvoice.findUniqueOrThrow({where:{id:(q.params as any).id},include});const ctx=await matchContext(db);return {...invoice,issues:invoiceIssues(invoice),poDifferences:poDifferences(invoice),lines:invoice.lines.map(l=>({...l,suggestion:suggestMatch(ctx,l,invoice.supplierId),shopify:ctx.variants.filter(v=>v.skuId===l.skuId&&v.confirmedAt)}))};});
   app.get('/invoices/:id/files/:fileId',async(q,r)=>{const {id,fileId}=q.params as any,file=await db.invoiceFile.findUniqueOrThrow({where:{id:fileId}});ensure(file.invoiceId===id,'File does not belong to this invoice',404);return r.header('content-disposition',`attachment; filename*=UTF-8''${encodeURIComponent(file.filename)}`).header('x-content-type-options','nosniff').header('cache-control','no-store').type(file.contentType).send(Buffer.from(file.data));});
+  app.post('/invoices/:id/reextract',async q=>{
+    const {version}=z.object({version:z.literal(1)}).parse(q.body),invoiceId=(q.params as any).id;
+    const old=await db.supplierInvoice.findUniqueOrThrow({where:{id:invoiceId},include:{files:true,lines:true}});
+    ensure(old.status==='REVIEW'&&old.version===version&&!old.lines.some(l=>l.confirmed),'Only untouched, unconfirmed drafts can be re-extracted',400);
+    ensure(old.files.length===1,'Re-extraction requires exactly one original attachment',400);
+    const document=await extractDocument(Buffer.from(old.files[0].data),old.files[0].filename),p=document.parsed;
+    ensure(p.lines.length>0&&p.invoiceNumber&&p.invoiceDate&&p.total!==null,'No complete extraction was available; the existing draft was preserved',400);
+    return mutate(db,q,'Re-extract untouched supplier invoice',async tx=>{
+      const current=await tx.supplierInvoice.findUniqueOrThrow({where:{id:invoiceId},include:{lines:true}});
+      ensure(current.status==='REVIEW'&&current.version===version&&!current.lines.some(l=>l.confirmed),'The draft changed; reopen it before retrying',409);
+      const ctx=await matchContext(tx);
+      const changed=await tx.supplierInvoice.updateMany({where:{id:invoiceId,status:'REVIEW',version},data:{invoiceNumber:p.invoiceNumber,invoiceDate:p.invoiceDate,dueDate:p.dueDate,subtotal:p.subtotal,freight:p.freight,tax:p.tax,total:p.total,extractedText:document.text,extractionWarnings:json(p.warnings),version:{increment:1}}});
+      ensure(changed.count===1,'The draft changed; reopen it before retrying',409);
+      await tx.supplierInvoiceLine.deleteMany({where:{invoiceId}});
+      await tx.supplierInvoiceLine.createMany({data:p.lines.map((l,position)=>{const m=suggestMatch(ctx,l,current.supplierId);return {...l,invoiceId,position,skuId:m.suggestedSkuId,matchReason:m.reason,confirmed:false};})});
+      return {id:invoiceId};
+    });
+  });
+
   app.patch('/invoices/:id',async q=>{const b=editSchema.parse(q.body),{id:invoiceId}=q.params as any;return mutate(db,q,'Review invoice lines',async tx=>{
     const old=await tx.supplierInvoice.findUniqueOrThrow({where:{id:invoiceId}});ensure(old.status==='REVIEW','Approved invoices are permanent; import a supplier correction separately');ensure(old.version===b.version,'This invoice was changed in another window. Reopen it before editing.');
     if(b.supplierId)ensure((await tx.supplier.findUnique({where:{id:b.supplierId}}))?.active,'Choose an active supplier',400);

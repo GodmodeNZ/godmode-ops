@@ -1,9 +1,13 @@
+import { extractSupplierInvoice } from './supplier-parsers.js';
+import { extractPbInvoice } from './pb-parser.js';
 import { simpleParser } from 'mailparser';
 import { parse } from 'csv-parse/sync';
 import { ensure } from './core.js';
 export type DraftLine = { description: string; supplierCode?: string; barcode?: string; quantity: number | null; unitCost: number | null; lineTotal: number | null };
 const amount = (s: any) => { if (s==null || !String(s).trim()) return null; const n=Number(String(s).replace(/[,$\s]/g,'')); return Number.isFinite(n)&&n>=0 ? n : null; };
 export function extractText(text: string, csv = false) {
+  const supplier = !csv ? extractSupplierInvoice(text) : null; if (supplier) return supplier;
+  const pb = !csv ? extractPbInvoice(text) : null; if (pb) return pb;
   const warnings = ['Verify the extracted quantities and costs against the original before approval. Unit costs must be excluding GST.'];
   const lines: DraftLine[] = [];
   if(csv) {
