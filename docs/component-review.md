@@ -17,3 +17,5 @@ The additive migration creates `CatalogueCandidate`; existing columns and rows a
 Tests cover repeated CSV headers, quoted descriptions, discarded quantities/costs, duplicate codes, missing identifiers, model/colour/capacity/pack conflicts, alias reuse, draft-only application, unchanged stock/costs and finished-PC separation. Existing invoice, currency, banking and operational tests remain part of the regression suite.
 
 When no component exists, the confirmation dialog offers explicit creation of a reviewed code/name/family. It rejects normalized duplicate codes and accepts no quantities or costs. Creating that identity does not confirm an invoice mapping; select it and review the mapping separately.
+
+Unconfirmed spreadsheet and Shopify candidates are also compared directly with source descriptions, explicit MPNs, codes and barcodes before ERP components exist. Matching model tokens and name similarity are suggestions only; their conflicting specifications are displayed. Review rows are paginated.

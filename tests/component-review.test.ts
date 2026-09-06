@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {PrismaClient} from '@prisma/client';
-import {catalogueCandidates,specificationConflicts,finishedPc} from '../apps/api/src/component-evidence.js';
+import {catalogueCandidates,specificationConflicts,finishedPc,referenceSuggestions} from '../apps/api/src/component-evidence.js';
 import {buildApp} from '../apps/api/src/app.js';
 import {hashPassword} from '../apps/api/src/auth.js';
 test('CSV only extracts identifiers/names and handles repeated headers and quoted descriptions',()=>{
@@ -46,3 +46,5 @@ test('Component review preserves stock/costs and approved invoices; imports and 
   assert.equal((await db.supplierInvoiceLine.findUniqueOrThrow({where:{id:draft.lines[0].id}})).unitCost?.toString(),'50');
  }finally{await app.close();await db.$disconnect();}
 });
+
+test('Cross-source suggestions work before any ERP component is linked',()=>{const records=[{id:'white',code:'PART-W',name:'Synthetic H6 Flow White'},{id:'black',code:'PART-B',name:'Synthetic H6 Flow Black'}];const matches=referenceSuggestions({description:'Synthetic H6 Flow White (MPN: PART-W)'},records);assert.equal(matches[0].id,'white');assert.equal(matches[0].score,98);assert.ok(matches[0].evidence.some(e=>e.includes('manufacturer')));assert.ok(matches.find(x=>x.id==='black')?.conflicts.some(c=>c.includes('colours')));});

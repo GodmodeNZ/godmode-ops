@@ -1,4 +1,9 @@
 export const canonical = (s: string | null | undefined) => (s ?? '').normalize('NFKC').trim().toUpperCase().replace(/\s+/g, ' ');
+export function referenceSuggestions(input:{description:string;code?:string|null;barcode?:string|null},records:{id:string;code?:string|null;barcode?:string|null;name:string}[]){
+ const words=(s:string)=>new Set(canonical(s).replace(/[^A-Z0-9]+/g,' ').split(' ').filter(x=>x.length>1));const a=words(input.description);
+ const mpn=input.description.match(/\bMPN\s*:\s*([^\s)]+)/i)?.[1];
+ return records.map(r=>{const evidence:string[]=[];let score=0;if(input.code&&r.code&&canonical(input.code)===canonical(r.code)){score=95;evidence.push('Exact source SKU/code');}if(mpn&&r.code&&canonical(mpn)===canonical(r.code)){score=98;evidence.push('Exact manufacturer part number from invoice');}if(input.barcode&&r.barcode&&canonical(input.barcode)===canonical(r.barcode)){score=99;evidence.push('Exact barcode');}const b=words(r.name),shared=[...a].filter(x=>b.has(x)).length,similarity=shared/Math.max(a.size,b.size,1);if(shared>=2&&similarity>=.25){score=Math.max(score,Math.round(similarity*75));evidence.push('Name similarity only — identity not confirmed');}if([...a].some(t=>/\d{3,}/.test(t)&&/[A-Z]/.test(t)&&!/^\d+(GB|TB|MB|MHZ|GHZ|MT|RPM|W)$/.test(t)&&b.has(t))&&shared>=2){score=Math.max(score,80);evidence.push('Matching model token — verify all specifications');}return {...r,score,evidence};}).filter(r=>r.score>0).sort((a,b)=>b.score-a.score).slice(0,5).map(r=>({...r,conflicts:specificationConflicts(input.description,r.name)}));
+}
 export function specifications(name: string) {
   const text = canonical(name);
   const colours = [...new Set(text.match(/\b(BLACK|WHITE|SILVER|RED|BLUE|PINK|GREY|GRAY)\b/g) ?? [])].map(x=>x==='GRAY'?'GREY':x).sort();
