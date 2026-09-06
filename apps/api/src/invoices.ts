@@ -40,6 +40,7 @@ export async function registerInvoices(app:FastifyInstance,db:PrismaClient){
   app.post('/invoices/:id/reextract',async q=>{
     const {version}=z.object({version:z.literal(1)}).parse(q.body),invoiceId=(q.params as any).id;
     const old=await db.supplierInvoice.findUniqueOrThrow({where:{id:invoiceId},include:{files:true,lines:true}});
+    ensure(!(await db.bankAllocation.count({where:{invoiceId,reversedAt:null}})),'Reverse bank allocations before re-extracting this invoice',409);
     ensure(old.status==='REVIEW'&&old.version===version&&!old.lines.some(l=>l.confirmed),'Only untouched, unconfirmed drafts can be re-extracted',400);
     ensure(old.files.length===1,'Re-extraction requires exactly one original attachment',400);
     const document=await extractDocument(Buffer.from(old.files[0].data),old.files[0].filename),p=document.parsed;
@@ -58,6 +59,7 @@ export async function registerInvoices(app:FastifyInstance,db:PrismaClient){
 
   app.patch('/invoices/:id',async q=>{const b=editSchema.parse(q.body),{id:invoiceId}=q.params as any;return mutate(db,q,'Review invoice lines',async tx=>{
     const old=await tx.supplierInvoice.findUniqueOrThrow({where:{id:invoiceId}});ensure(old.status==='REVIEW','Approved invoices are permanent; import a supplier correction separately');ensure(old.version===b.version,'This invoice was changed in another window. Reopen it before editing.');
+    if(await tx.bankAllocation.count({where:{invoiceId,reversedAt:null}}))ensure(b.currency===old.currency&&String(b.total??'')===String(old.total??'')&&b.supplierId===old.supplierId&&b.invoiceNumber===old.invoiceNumber,'Reverse bank allocations before changing invoice currency, total or supplier identity',409);
     if(b.supplierId)ensure((await tx.supplier.findUnique({where:{id:b.supplierId}}))?.active,'Choose an active supplier',400);
     if(b.purchaseOrderId){const p=await tx.purchaseOrder.findUniqueOrThrow({where:{id:b.purchaseOrderId}});ensure(!p.fxLockedAt&&p.status==='DRAFT'&&p.supplierId===b.supplierId&&p.currency===b.currency,'The PO must belong to this supplier and currency and not be cancelled',400);}
     const ctx=await matchContext(tx);const lines=b.lines.map((l,position)=>{if(l.skuId)ensure(ctx.skus.some(s=>s.id===l.skuId),'An invoice line references an inactive or missing SKU',400);const m=suggestMatch(ctx,l,b.supplierId);return {...l,position,confirmed:l.confirmed&&Boolean(l.skuId)&&old.supplierId===b.supplierId,matchReason:l.confirmed?'Manually confirmed while reviewing invoice':m.reason};});

@@ -606,6 +606,7 @@ model SupplierAlias {
 }
 
 model SupplierInvoice {
+  bankAllocations BankAllocation[]
   payments        InvoicePayment[]
   fxRate          Decimal?         @db.Decimal(20, 10)
   fxRequestedDate DateTime?        @db.Date
@@ -683,6 +684,10 @@ model InvoiceFile {
 }
 
 model InvoicePayment {
+  bankAllocationId String? @unique
+  bankAllocation BankAllocation? @relation(fields: [bankAllocationId], references: [id])
+  reversedAt DateTime?
+  reversalReason String?
   id         String          @id @default(cuid())
   invoiceId  String
   invoice    SupplierInvoice @relation(fields: [invoiceId], references: [id])
@@ -693,4 +698,101 @@ model InvoicePayment {
   createdAt  DateTime        @default(now())
 
   @@index([invoiceId])
+}
+
+model BankFeed {
+ id String @id @default("akahu")
+ version Int @default(1)
+ mode String @default("SANDBOX")
+ status String @default("UNCONFIGURED")
+ since DateTime @db.Date
+ autoSync Boolean @default(false)
+ lastSyncAt DateTime?
+ lastRefreshAttempt DateTime?
+ nextRequestAt DateTime?
+ error String?
+ leaseOwner String?
+ leaseUntil DateTime?
+ updatedAt DateTime @updatedAt
+}
+model BankOAuthState {
+ hash String @id
+ userId String
+ configVersion Int
+ redirectUri String
+ expiresAt DateTime
+ createdAt DateTime @default(now())
+}
+model BankAccount {
+ id String @id
+ name String
+ institution String
+ currency String
+ maskedNumber String?
+ status String
+ eligible Boolean @default(false)
+ selected Boolean @default(false)
+ refreshedAt DateTime?
+ authorisationId String?
+ predecessorId String?
+ pending Json @default("[]")
+ pendingAt DateTime?
+ transactions BankTransaction[]
+ updatedAt DateTime @updatedAt
+}
+model BankSync {
+ id String @id @default(cuid())
+ status String @default("RUNNING")
+ accountIds Json
+ accountIndex Int @default(0)
+ cursor String?
+ start DateTime
+ end DateTime
+ pages Int @default(0)
+ imported Int @default(0)
+ error String?
+ startedAt DateTime @default(now())
+ completedAt DateTime?
+}
+model BankTransaction {
+ id String @id
+ accountId String
+ account BankAccount @relation(fields: [accountId], references: [id])
+ currency String
+ amount Decimal @db.Decimal(18,2)
+ date DateTime
+ description String
+ references Json @default("{}")
+ status String @default("POSTED")
+ revision Int @default(1)
+ reviewRequired Boolean @default(false)
+ seenSync String?
+ providerUpdatedAt DateTime?
+ allocations BankAllocation[]
+ createdAt DateTime @default(now())
+ updatedAt DateTime @updatedAt
+ @@index([accountId,date])
+}
+model BankAllocation {
+ id String @id @default(cuid())
+ transactionId String
+ transaction BankTransaction @relation(fields: [transactionId], references: [id])
+ invoiceId String
+ invoice SupplierInvoice @relation(fields: [invoiceId], references: [id])
+ invoiceCurrency String
+ originalAmount Decimal @db.Decimal(18,2)
+ amountNzd Decimal @db.Decimal(18,2)
+ feeNzd Decimal @db.Decimal(18,2)
+ approvedRate Decimal? @db.Decimal(20,10)
+ expectedNzd Decimal? @db.Decimal(18,2)
+ exchangeDifferenceNzd Decimal? @db.Decimal(18,2)
+ evidence Json
+ confirmedBy String
+ confirmedAt DateTime @default(now())
+ reversedAt DateTime?
+ reversedBy String?
+ reversalReason String?
+ payment InvoicePayment?
+ @@index([transactionId,reversedAt])
+ @@index([invoiceId,reversedAt])
 }

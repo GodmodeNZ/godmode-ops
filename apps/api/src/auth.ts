@@ -20,7 +20,7 @@ export async function registerAuth(app: FastifyInstance, db: PrismaClient) {
   const failures = new Map<string, { count: number; until: number }>();
   app.addHook('onRequest', async (q, r) => {
     const path = q.url.split('?')[0].replace(/^\/api(?=\/|$)/, '');
-    if (path === '/health' || path === '/auth/login' || (q.method === 'GET' && path === '/mailbox/callback') || path.startsWith('/integrations/shopify/webhooks/')) return;
+    if (path === '/health' || path === '/auth/login' || (q.method === 'GET' && ['/mailbox/callback','/banking/callback'].includes(path)) || path.startsWith('/integrations/shopify/webhooks/')) return;
     if (path.startsWith('/factory/') && process.env.FACTORY_API_TOKEN) {
       const token = q.headers.authorization?.replace(/^Bearer /, '') ?? '';
       if (token && timingSafeEqual(Buffer.from(digest(token)), Buffer.from(digest(process.env.FACTORY_API_TOKEN)))) { (q as any).user = { email: 'controller', role: 'OPERATOR' }; return; }
@@ -29,6 +29,7 @@ export async function registerAuth(app: FastifyInstance, db: PrismaClient) {
     const session = token ? await db.session.findUnique({ where: { tokenHash: digest(token) }, include: { user: true } }) : null;
     if (!session || session.expiresAt < new Date() || !session.user.active) return r.code(401).send({ error: 'Sign in to Godmode Ops' });
     (q as any).user = publicUser(session.user);
+    if (path.startsWith('/banking')) ensure(session.user.role === 'ADMIN', 'Banking requires administrator access', 403);
     if (!['GET', 'HEAD', 'OPTIONS'].includes(q.method)) {
       ensure(q.headers.origin === process.env.WEB_ORIGIN || (!q.headers.origin && process.env.NODE_ENV !== 'production'), 'Request origin is not allowed', 403);
       ensure(q.headers['content-type']?.startsWith('application/json'), 'Use application/json', 415);

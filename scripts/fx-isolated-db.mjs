@@ -9,7 +9,7 @@ const url=new URL(admin);url.pathname='/'+database;url.searchParams.set('schema'
 mkdirSync('.data/fx-test-bootstrap/migrations',{recursive:true});
 writeFileSync('.data/fx-test-url',url.toString());
 writeFileSync('.data/fx-test-bootstrap/schema.prisma',readFileSync('prisma/schema.prisma'));
-for(const name of readdirSync('prisma/migrations'))if(!name.startsWith('20260906'))cpSync('prisma/migrations/'+name,'.data/fx-test-bootstrap/migrations/'+name,{recursive:true});
+for(const name of readdirSync('prisma/migrations'))if(name<'202609060001_multicurrency')cpSync('prisma/migrations/'+name,'.data/fx-test-bootstrap/migrations/'+name,{recursive:true});
 process.env.DATABASE_URL=url.toString();
 function run(args){const r=spawnSync(process.execPath,args,{stdio:'inherit',env:process.env});if(r.status!==0)throw new Error('Isolated migration failed');}
 run(['node_modules/prisma/build/index.js','migrate','deploy','--schema','.data/fx-test-bootstrap/schema.prisma']);
