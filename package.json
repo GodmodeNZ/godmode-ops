@@ -15,13 +15,14 @@
     "procurement:smoke": "tsx scripts/procurement-smoke.ts",
     "procurement:plan": "tsx scripts/procurement-plan.ts",
     "build": "npm --workspace apps/api run build && npm --workspace apps/web run build",
-    "test": "node --import tsx --test tests/*.test.ts",
+    "test": "node scripts/test.mjs",
     "db:deploy": "node scripts/migrate.mjs",
     "start": "node apps/api/dist/server.js",
     "local": "node scripts/local.mjs"
   },
   "devDependencies": {
     "embedded-postgres": "^18.4.0-beta.17",
+    "pg": "8.23.0",
     "prisma": "^6.15.0",
     "tsx": "^4.20.5"
   },

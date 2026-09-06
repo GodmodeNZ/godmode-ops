@@ -42,16 +42,21 @@ export async function position(tx: Tx, skuId: string, locationId?: string) {
   const onHand = stock._sum.quantityDelta ?? 0, reserved = reservations._sum.quantity ?? 0;
   return { onHand, reserved, available: onHand - reserved };
 }
+export async function valuationNeedsReview(tx:Tx,skuId:string){
+ const pos=await tx.purchaseOrder.findMany({where:{currency:{not:'NZD'},fxNeedsReview:true},select:{id:true}});
+ return (await tx.inventoryTransaction.count({where:{skuId,OR:[{valuationNeedsReview:true},{referenceType:'PURCHASE_ORDER',referenceId:{in:pos.map(p=>p.id)}}]}}))>0;
+}
 export async function averageCost(tx: Tx, skuId: string, locationId?: string) {
+  ensure(!(await valuationNeedsReview(tx,skuId)),'Historical foreign-currency stock requires valuation review; no NZD value was assumed',409);
   // Moving weighted-average receipts, preserving the cost on every outgoing movement.
   const entries = await tx.inventoryTransaction.findMany({ where: { skuId, locationId }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] });
   let qty = 0, value = new Prisma.Decimal(0);
   for (const e of entries) {
     const cost = e.unitCost ?? (qty > 0 ? value.div(qty) : new Prisma.Decimal(0));
-    value = value.add(cost.mul(e.quantityDelta)); qty += e.quantityDelta;
+    value = value.add(e.valueDeltaNzd??cost.mul(e.quantityDelta)); qty += e.quantityDelta;
     if (qty <= 0) value = new Prisma.Decimal(0);
   }
-  return qty > 0 ? value.div(qty).toDecimalPlaces(2) : new Prisma.Decimal(0);
+  return qty > 0 ? value.div(qty).toDecimalPlaces(8) : new Prisma.Decimal(0);
 }
 export async function syncOrderStatuses(tx: Tx) {
   const orders = await tx.salesOrder.findMany({ where: { status: { not: 'CANCELLED' } }, include: { lines: true } });

@@ -12,7 +12,7 @@ export async function api(path: string, body?: unknown, method = 'POST') {
   if (!r.ok) { if (r.status < 500) pending.delete(fingerprint); if (r.status === 401) window.dispatchEvent(new Event('signed-out')); throw new Error(data.error ?? `Request failed (${r.status})`); }
   pending.delete(fingerprint); return data;
 }
-export const money = (n: unknown) => new Intl.NumberFormat('en-NZ', { style: 'currency', currency: 'NZD' }).format(Number(n ?? 0));
+export const money = (n: unknown) => n==null?'Needs review':new Intl.NumberFormat('en-NZ', { style: 'currency', currency: 'NZD' }).format(Number(n));
 export const date = (d: string) => d ? new Intl.DateTimeFormat('en-NZ', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Pacific/Auckland' }).format(new Date(d)) : '—';
 export const label = (s: string) => (s ?? '').replace(/_/g, ' ').toLowerCase().replace(/^./, c => c.toUpperCase());
 export function exportCsv(name: string, rows: any[]) {

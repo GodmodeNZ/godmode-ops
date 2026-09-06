@@ -158,6 +158,24 @@ model SupplierSku {
 }
 
 model PurchaseOrder {
+  version         Int       @default(1)
+  orderDate       DateTime  @default(now()) @db.Date
+  freight         Decimal?  @default(0) @db.Decimal(12, 2)
+  tax             Decimal?  @default(0) @db.Decimal(12, 2)
+  total           Decimal?  @db.Decimal(12, 2)
+  fxRate          Decimal?  @db.Decimal(20, 10)
+  fxRequestedDate DateTime? @db.Date
+  fxDate          DateTime? @db.Date
+  fxSource        String?
+  fxManual        Boolean   @default(false)
+  fxConfirmed     Boolean   @default(false)
+  fxConfirmedBy   String?
+  fxLockedAt      DateTime?
+  fxNeedsReview   Boolean   @default(true)
+  nzdSnapshot     Json?
+  importCharges   Decimal?  @default(0) @db.Decimal(12, 2)
+  paymentFees     Decimal?  @default(0) @db.Decimal(12, 2)
+  costAllocation  Json      @default("{}")
   id             String              @id @default(cuid())
   number         String              @unique
   supplierId     String
@@ -177,6 +195,9 @@ model PurchaseOrder {
 }
 
 model PurchaseOrderLine {
+  nzdUnitCost      Decimal?      @db.Decimal(20, 8)
+  nzdLineTotal     Decimal?      @db.Decimal(18, 2)
+  stockValueNzd    Decimal?      @db.Decimal(18, 2)
   id              String        @id @default(cuid())
   purchaseOrderId String
   purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
@@ -203,6 +224,7 @@ model Location {
 }
 
 model InventoryUnit {
+  nzdUnitCost    Decimal?               @db.Decimal(20, 8)
   id             String                 @id @default(cuid())
   skuId          String
   sku            Sku                    @relation(fields: [skuId], references: [id])
@@ -219,6 +241,8 @@ model InventoryUnit {
 }
 
 model InventoryTransaction {
+  valueDeltaNzd        Decimal?                 @db.Decimal(18, 2)
+  valuationNeedsReview Boolean                  @default(false)
   id            String                   @id @default(cuid())
   skuId         String
   sku           Sku                      @relation(fields: [skuId], references: [id])
@@ -417,6 +441,8 @@ model RepairTicket {
 }
 
 model UnitComponent {
+  nzdLineTotal    Decimal?       @db.Decimal(18, 2)
+  nzdUnitCost     Decimal?       @db.Decimal(20, 8)
   id              String         @id @default(cuid())
   unitId          String
   unit            GodmodeUnit    @relation(fields: [unitId], references: [id], onDelete: Cascade)
@@ -580,6 +606,20 @@ model SupplierAlias {
 }
 
 model SupplierInvoice {
+  payments        InvoicePayment[]
+  fxRate          Decimal?         @db.Decimal(20, 10)
+  fxRequestedDate DateTime?        @db.Date
+  fxDate          DateTime?        @db.Date
+  fxSource        String?
+  fxManual        Boolean          @default(false)
+  fxConfirmed     Boolean          @default(false)
+  fxConfirmedBy   String?
+  fxLockedAt      DateTime?
+  fxNeedsReview   Boolean          @default(true)
+  nzdSnapshot     Json?
+  importCharges   Decimal?         @default(0) @db.Decimal(12, 2)
+  paymentFees     Decimal?         @default(0) @db.Decimal(12, 2)
+  costAllocation  Json             @default("{}")
   id String @id @default(cuid())
   fingerprint String @unique
   source String
@@ -612,6 +652,9 @@ model SupplierInvoice {
 }
 
 model SupplierInvoiceLine {
+  nzdUnitCost   Decimal?        @db.Decimal(20, 8)
+  nzdLineTotal  Decimal?        @db.Decimal(18, 2)
+  stockValueNzd Decimal?        @db.Decimal(18, 2)
   id String @id @default(cuid())
   invoiceId String
   invoice SupplierInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
@@ -637,4 +680,17 @@ model InvoiceFile {
   filename String
   contentType String
   data Bytes
+}
+
+model InvoicePayment {
+  id         String          @id @default(cuid())
+  invoiceId  String
+  invoice    SupplierInvoice @relation(fields: [invoiceId], references: [id])
+  amountNzd  Decimal         @db.Decimal(18, 2)
+  paidAt     DateTime        @db.Date
+  reference  String
+  recordedBy String
+  createdAt  DateTime        @default(now())
+
+  @@index([invoiceId])
 }

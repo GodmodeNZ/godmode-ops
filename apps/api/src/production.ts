@@ -1,7 +1,8 @@
+import { money } from './fx.js';
 import type { FastifyInstance } from 'fastify';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { z } from 'zod';
-import { actor, averageCost, ensure, json, mutate, position, syncOrderStatuses, type Tx } from './core.js';
+import { actor, averageCost, valuationNeedsReview, ensure, json, mutate, position, syncOrderStatuses, type Tx } from './core.js';
 const text = z.string().trim().min(1).max(200);
 const detail = { product: true, lines: true, reservations: { include: { sku: true, inventoryUnit: true } }, events: { orderBy: { createdAt: 'asc' as const } }, unit: { include: { shipment: true, components: { include: { sku: true } }, repairs: true } } };
 export const qaChecks = ['hardware', 'memory', 'storage', 'thermals', 'windows', 'cosmetic'] as const;
@@ -72,11 +73,12 @@ export async function registerProduction(app: FastifyInstance, db: PrismaClient)
       const unit = await tx.godmodeUnit.create({ data: { unitNumber, buildId: id, completedAt: new Date() } });
       for (const r of b.reservations) {
         if (r.inventoryUnit) ensure(!r.inventoryUnit.consumedAt && r.inventoryUnit.locationId === r.locationId && r.inventoryUnit.skuId === r.skuId, 'A reserved serial is no longer available');
-        const cost = r.inventoryUnit?.unitCost ?? await averageCost(tx, r.skuId, r.locationId);
-        await tx.inventoryTransaction.create({ data: { skuId: r.skuId, locationId: r.locationId, quantityDelta: -r.quantity, unitCost: cost, type: 'BUILD_CONSUMPTION', referenceType: 'BUILD', referenceId: id, createdBy: actor(q) } });
+        ensure(!(await valuationNeedsReview(tx,r.skuId)),'Historical foreign-currency component costs need review',409);
+        const cost = r.inventoryUnit?.nzdUnitCost ?? r.inventoryUnit?.unitCost ?? await averageCost(tx, r.skuId, r.locationId);
+        await tx.inventoryTransaction.create({ data: { skuId: r.skuId, locationId: r.locationId, quantityDelta: -r.quantity, valueDeltaNzd:money(cost.mul(-r.quantity)),unitCost: cost, type: 'BUILD_CONSUMPTION', referenceType: 'BUILD', referenceId: id, createdBy: actor(q) } });
         if (r.inventoryUnitId) await tx.inventoryUnit.update({ where: { id: r.inventoryUnitId }, data: { consumedAt: new Date(), locationId: null } });
         await tx.inventoryReservation.update({ where: { id: r.id }, data: { status: 'CONSUMED' } });
-        await tx.unitComponent.create({ data: { unitId: unit.id, skuId: r.skuId, inventoryUnitId: r.inventoryUnitId, role: b.lines.find(l => l.id === r.buildLineId)!.role, quantity: r.quantity, serialNumber: r.inventoryUnit?.serialNumber, unitCost: cost } });
+        await tx.unitComponent.create({ data: { unitId: unit.id, skuId: r.skuId, inventoryUnitId: r.inventoryUnitId, role: b.lines.find(l => l.id === r.buildLineId)!.role, quantity: r.quantity, serialNumber: r.inventoryUnit?.serialNumber, nzdLineTotal:money(cost.mul(r.quantity)),nzdUnitCost:cost,unitCost: cost } });
       }
       await tx.build.update({ where: { id }, data: { status: 'COMPLETED', events: { create: { type: 'BUILD_COMPLETED', actor: actor(q), metadata: { unitNumber } } } } }); await syncOrderStatuses(tx); return unit;
     });

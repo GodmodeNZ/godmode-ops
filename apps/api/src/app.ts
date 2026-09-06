@@ -1,3 +1,5 @@
+import {costReports} from './cost-reports.js';
+import { registerFx } from './fx-routes.js';
 import { registerMatching } from './matching.js';
 import { registerInvoices } from './invoices.js';
 import { registerMailbox } from './mailbox.js';
@@ -25,14 +27,9 @@ export async function buildApp(db: PrismaClient, logger = true) {
     await api.register(cors, { origin: process.env.WEB_ORIGIN ?? 'http://localhost:5173', credentials: true });
     await api.register(rawBody, { field: 'rawBody', global: false, encoding: false, runFirst: true });
     api.addHook('onRoute', options => { if (options.url.includes('/webhooks/')) options.config = { ...options.config, rawBody: true }; });
-    await registerAuth(api, db); await registerInventory(api, db); await registerProduction(api, db); await registerProcurementRoutes(api, db); await registerIntegrations(api, db); await registerMatching(api, db); await registerInvoices(api, db); await registerMailbox(api, db);
+    await registerAuth(api, db); await registerFx(api, db); await registerInventory(api, db); await registerProduction(api, db); await registerProcurementRoutes(api, db); await registerIntegrations(api, db); await registerMatching(api, db); await registerInvoices(api, db); await registerMailbox(api, db);
     api.get('/audit', async () => db.auditLog.findMany({ orderBy: { createdAt: 'desc' }, take: 1000 }));
-    api.get('/reports', async () => {
-      const [skus, units, orders, plan] = await Promise.all([db.sku.findMany(), db.godmodeUnit.findMany({ include: { components: true, shipment: true, build: { include: { product: true } } } }), db.salesOrder.findMany({ include: { lines: true } }), purchasePlan(db)]);
-      const stock = await db.inventoryTransaction.groupBy({ by: ['skuId'], _sum: { quantityDelta: true } });
-      const valuation = await Promise.all(skus.map(async sku => { const qty = stock.find(s => s.skuId === sku.id)?._sum.quantityDelta ?? 0; const cost = await averageCost(db, sku.id); return { sku: sku.name, code: sku.code, quantity: qty, averageCost: cost, value: cost.mul(qty).toDecimalPlaces(2) }; }));
-      return { valuation, inventoryValue: valuation.reduce((n, s) => n + Number(s.value), 0), finishedGoodsValue: units.filter(u => !u.shipment).reduce((n, u) => n + u.components.reduce((v, c) => v + Number(c.unitCost ?? 0) * c.quantity, 0), 0), buildCosts: units.map(u => ({ unitNumber: u.unitNumber, product: u.build.product.name, dispatched: Boolean(u.shipment), cost: u.components.reduce((n, c) => n + Number(c.unitCost ?? 0) * c.quantity, 0) })), openOrderValue: orders.filter(o => !['COMPLETED', 'CANCELLED'].includes(o.status)).reduce((n, o) => n + Number(o.total ?? 0), 0), shortageLines: plan.filter(p => p.shortage > 0).length };
-    });
+    api.get('/reports',async()=>costReports(db));
   }, { prefix: '/api' });
   return app;
 }

@@ -1,10 +1,19 @@
+import { D, money, localRate, snapshot, fxView, rateIssues, receiptValue } from './fx.js';
 import type { FastifyInstance } from 'fastify';
 import { PrismaClient, Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { actor, ensure, mutate, type Tx } from './core.js';
 import { receive } from './inventory.js';
 const text = z.string().trim().min(1).max(200);
-const poInclude = { supplier: true, lines: { include: { sku: true } } };
+const poInclude = { supplier: true, lines: { orderBy:{id:'asc' as const}, include: { sku: true } } };
+const poLines=(p:any)=>p.lines.map((l:any)=>({...l,quantity:l.quantityOrdered,lineTotal:money(D(l.unitCost).mul(l.quantityOrdered))}));
+const poHeader=(p:any)=>({...p,subtotal:poLines(p).reduce((s:any,l:any)=>s.add(l.lineTotal),D(0)),total:p.total??poLines(p).reduce((s:any,l:any)=>s.add(l.lineTotal),D(0)).add(p.freight??0).add(p.tax??0).add(p.importCharges??0).add(p.paymentFees??0)});
+async function lockPo(tx:Tx,p:any){
+ if(p.nzdSnapshot&&p.fxLockedAt){ensure(!rateIssues(p,p.orderDate).length,rateIssues(p,p.orderDate).join('; '),400);return p;}
+ const data=poHeader(p),converted=snapshot(data,poLines(p),p.orderDate);
+ for(const [i,l] of p.lines.entries())await tx.purchaseOrderLine.update({where:{id:l.id},data:{nzdUnitCost:converted.lines[i].unitCostNzd,nzdLineTotal:converted.lines[i].lineTotalNzd,stockValueNzd:converted.lines[i].stockValueNzd}});
+ return tx.purchaseOrder.update({where:{id:p.id},data:{...(p.currency==='NZD'?localRate(p.orderDate):{}),total:data.total,fxLockedAt:new Date(),fxNeedsReview:false,nzdSnapshot:converted},include:poInclude});
+}
 export async function purchasePlan(db: Tx | PrismaClient) {
   const [stock, reservations, incoming, drafts, builds, skus] = await Promise.all([
     db.inventoryTransaction.groupBy({ by: ['skuId'], _sum: { quantityDelta: true } }),
@@ -37,25 +46,25 @@ export async function registerProcurementRoutes(app: FastifyInstance, db: Prisma
     const b = z.object({ supplierCode: z.string().optional(), unitCost: z.number().nonnegative(), currency: z.literal('NZD').default('NZD'), preferred: z.boolean().default(false), leadTimeDays: z.number().int().nonnegative().default(0), minOrderQty: z.number().int().positive().default(1) }).parse(q.body);
     return mutate(db, q, 'Update supplier quote', async tx => { if (b.preferred) await tx.supplierSku.updateMany({ where: { skuId }, data: { preferred: false } }); const data = { ...b, unitCost: new Prisma.Decimal(b.unitCost), lastQuotedAt: new Date() }; return tx.supplierSku.upsert({ where: { supplierId_skuId: { supplierId, skuId } }, create: { supplierId, skuId, ...data }, update: data }); });
   });
-  app.get('/purchase-orders', async () => db.purchaseOrder.findMany({ include: poInclude, orderBy: { createdAt: 'desc' }, take: 2000 }));
+  app.get('/purchase-orders', async () => (await db.purchaseOrder.findMany({ include: poInclude, orderBy: { createdAt: 'desc' }, take: 2000 })).map(p=>fxView(poHeader(p),poLines(p),p.orderDate)));
   app.post('/purchase-orders', async q => {
-    const b = z.object({ number: text, supplierId: text, currency: z.literal('NZD').default('NZD'), supplierRef: z.string().optional(), notes: z.string().optional(), expectedAt: z.string().datetime().optional(), lines: z.array(z.object({ skuId: text, supplierCode: z.string().optional(), quantityOrdered: z.number().int().positive(), unitCost: z.number().nonnegative() })).min(1) }).parse(q.body);
-    return mutate(db, q, 'Create purchase order', tx => tx.purchaseOrder.create({ data: { ...b, expectedAt: b.expectedAt ? new Date(b.expectedAt) : undefined, lines: { create: b.lines.map(l => ({ ...l, unitCost: new Prisma.Decimal(l.unitCost) })) } }, include: poInclude }));
+    const b = z.object({ number: text, supplierId: text, currency: z.string().regex(/^[A-Z]{3}$/).default('NZD'), orderDate:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),freight:z.number().nonnegative().default(0),tax:z.number().nonnegative().default(0),importCharges:z.number().nonnegative().default(0),paymentFees:z.number().nonnegative().default(0),costAllocation:z.any().optional(), supplierRef: z.string().optional(), notes: z.string().optional(), expectedAt: z.string().datetime().optional(), lines: z.array(z.object({ skuId: text, supplierCode: z.string().optional(), quantityOrdered: z.number().int().positive(), unitCost: z.number().nonnegative() })).min(1) }).parse(q.body);
+    return mutate(db, q, 'Create purchase order', tx => tx.purchaseOrder.create({ data: { ...b,orderDate:b.orderDate?new Date(b.orderDate):new Date(),...(b.currency==='NZD'?localRate(b.orderDate??new Date()):{}), expectedAt: b.expectedAt ? new Date(b.expectedAt) : undefined, lines: { create: b.lines.map(l => ({ ...l, unitCost: new Prisma.Decimal(l.unitCost) })) } }, include: poInclude }));
   });
-  app.post('/purchase-orders/:id/order', async q => { const { id } = q.params as { id: string }; return mutate(db, q, 'Mark purchase order placed', async tx => { const po = await tx.purchaseOrder.findUniqueOrThrow({ where: { id } }); ensure(po.status === 'DRAFT', 'Only draft POs can be marked ordered'); return tx.purchaseOrder.update({ where: { id }, data: { status: 'ORDERED', orderedAt: new Date() }, include: poInclude }); }); });
+  app.post('/purchase-orders/:id/order', async q => { const { id } = q.params as { id: string }; return mutate(db, q, 'Mark purchase order placed', async tx => { let po = await tx.purchaseOrder.findUniqueOrThrow({ where: { id },include:poInclude }); ensure(po.status === 'DRAFT', 'Only draft POs can be marked ordered');po=await lockPo(tx,po); return tx.purchaseOrder.update({ where: { id }, data: { version:{increment:1},status: 'ORDERED', orderedAt: new Date() }, include: poInclude }); }); });
   app.post('/purchase-orders/:id/cancel', async q => { const { id } = q.params as { id: string }; const { reason } = z.object({ reason: text }).parse(q.body); return mutate(db, q, 'Cancel remaining purchase order', async tx => { const po = await tx.purchaseOrder.findUniqueOrThrow({ where: { id } }); ensure(!['RECEIVED', 'CANCELLED'].includes(po.status), 'This PO is already closed'); return tx.purchaseOrder.update({ where: { id }, data: { status: 'CANCELLED', notes: `${po.notes ?? ''}\nCancelled remainder: ${reason}` }, include: poInclude }); }); });
   app.post('/purchase-orders/:id/receive', async q => {
     const { id } = q.params as { id: string }; const b = z.object({ locationId: text, lines: z.array(z.object({ lineId: text, quantity: z.number().int().positive(), serialNumbers: z.array(text).default([]) })).min(1) }).parse(q.body);
     ensure(new Set(b.lines.map(l => l.lineId)).size === b.lines.length, 'A PO line may only appear once per receipt', 400);
     return mutate(db, q, 'Receive purchase order', async tx => {
-      const po = await tx.purchaseOrder.findUniqueOrThrow({ where: { id }, include: { lines: true } }); ensure(['ORDERED', 'PARTIALLY_RECEIVED'].includes(po.status), 'Mark the PO ordered before receiving it');
+      let po = await tx.purchaseOrder.findUniqueOrThrow({ where: { id }, include:poInclude }); ensure(['ORDERED', 'PARTIALLY_RECEIVED'].includes(po.status), 'Mark the PO ordered before receiving it');po=await lockPo(tx,po);
       for (const l of b.lines) {
         const line = po.lines.find(x => x.id === l.lineId); ensure(line, 'PO line not found', 400); ensure(l.quantity <= line.quantityOrdered - line.quantityReceived, 'Receipt exceeds the remaining PO quantity');
-        await receive(tx, { skuId: line.skuId, locationId: b.locationId, quantity: l.quantity, serialNumbers: l.serialNumbers, unitCost: line.unitCost }, actor(q), po.id);
+        await receive(tx, { skuId: line.skuId, locationId: b.locationId, quantity: l.quantity, serialNumbers: l.serialNumbers, unitCost: D(receiptValue(line.stockValueNzd!,line.quantityOrdered,line.quantityReceived,l.quantity)).div(l.quantity),valueNzd:receiptValue(line.stockValueNzd!,line.quantityOrdered,line.quantityReceived,l.quantity),unitValuesNzd:l.serialNumbers.map((_,i)=>receiptValue(line.stockValueNzd!,line.quantityOrdered,line.quantityReceived+i,1)) }, actor(q), po.id);
         await tx.purchaseOrderLine.update({ where: { id: line.id }, data: { quantityReceived: { increment: l.quantity } } });
       }
       const lines = await tx.purchaseOrderLine.findMany({ where: { purchaseOrderId: id } });
-      return tx.purchaseOrder.update({ where: { id }, data: { status: lines.every(l => l.quantityReceived === l.quantityOrdered) ? 'RECEIVED' : 'PARTIALLY_RECEIVED' }, include: poInclude });
+      return tx.purchaseOrder.update({ where: { id }, data: { version:{increment:1},status: lines.every(l => l.quantityReceived === l.quantityOrdered) ? 'RECEIVED' : 'PARTIALLY_RECEIVED' }, include: poInclude });
     });
   });
   app.get('/procurement/reorder', async () => purchasePlan(db));

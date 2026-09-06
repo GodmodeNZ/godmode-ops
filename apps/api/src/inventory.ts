@@ -1,3 +1,4 @@
+import { D, money } from './fx.js';
 import type { FastifyInstance } from 'fastify';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { z } from 'zod';
@@ -5,13 +6,15 @@ import { actor, averageCost, ensure, mutate, position, type Tx } from './core.js
 const text = z.string().trim().min(1).max(200);
 const serials = z.array(text).max(1000).default([]);
 
-export async function receive(tx: Tx, b: { skuId: string; locationId: string; quantity: number; unitCost: number | Prisma.Decimal; serialNumbers: string[] }, who: string, reference?: string) {
+export async function receive(tx: Tx, b: { skuId: string; locationId: string; quantity: number; unitCost: number | Prisma.Decimal; serialNumbers: string[]; valueNzd?:Prisma.Decimal; unitValuesNzd?:Prisma.Decimal[] }, who: string, reference?: string) {
   const sku = await tx.sku.findUniqueOrThrow({ where: { id: b.skuId } });
   ensure(sku.active, 'This SKU is inactive');
   ensure(sku.trackingMode === 'SERIALIZED' ? b.serialNumbers.length === b.quantity : b.serialNumbers.length === 0, 'Provide one serial per serialized item; quantity-only items do not accept serials', 400);
   ensure(new Set(b.serialNumbers).size === b.serialNumbers.length, 'Duplicate serial numbers', 400);
-  const movement = await tx.inventoryTransaction.create({ data: { skuId: sku.id, locationId: b.locationId, quantityDelta: b.quantity, type: 'PURCHASE_RECEIPT', unitCost: new Prisma.Decimal(b.unitCost), referenceType: reference ? 'PURCHASE_ORDER' : 'MANUAL_RECEIPT', referenceId: reference, createdBy: who } });
-  for (const serialNumber of b.serialNumbers) await tx.inventoryUnit.create({ data: { skuId: sku.id, locationId: b.locationId, serialNumber, unitCost: new Prisma.Decimal(b.unitCost) } });
+  const total=b.valueNzd??money(D(b.unitCost).mul(b.quantity));
+  if(sku.trackingMode==='SERIALIZED'&&b.unitValuesNzd?.length)ensure(b.unitValuesNzd.length===b.quantity&&b.unitValuesNzd.reduce((s,n)=>s.add(n),D(0)).eq(total),'Serial cost allocation does not match receipt value',400);
+  const movement = await tx.inventoryTransaction.create({ data: { skuId: sku.id, locationId: b.locationId, quantityDelta: b.quantity, type: 'PURCHASE_RECEIPT', valueDeltaNzd:total,unitCost: new Prisma.Decimal(b.unitCost), referenceType: reference ? 'PURCHASE_ORDER' : 'MANUAL_RECEIPT', referenceId: reference, createdBy: who } });
+  for (const [i,serialNumber] of b.serialNumbers.entries()) {const cost=b.unitValuesNzd?.[i]??D(b.unitCost);await tx.inventoryUnit.create({ data: { skuId: sku.id, locationId: b.locationId, serialNumber, unitCost:cost,nzdUnitCost:cost } });}
   return movement;
 }
 export async function registerInventory(app: FastifyInstance, db: PrismaClient) {
@@ -58,12 +61,12 @@ export async function registerInventory(app: FastifyInstance, db: PrismaClient) 
         ensure(b.serialNumbers.length === b.quantity && new Set(b.serialNumbers).size === b.quantity, 'Provide distinct serials matching the transfer quantity', 400);
         const units = await tx.inventoryUnit.findMany({ where: { skuId: sku.id, locationId: b.fromLocationId, consumedAt: null, serialNumber: { in: b.serialNumbers }, reservations: { none: { status: 'ACTIVE' } } } });
         ensure(units.length === b.quantity, 'A serial is unavailable at this location');
-        cost = units.reduce((sum, u) => sum.add(u.unitCost ?? 0), new Prisma.Decimal(0)).div(units.length).toDecimalPlaces(2);
+        cost = units.reduce((sum, u) => sum.add(u.nzdUnitCost ?? u.unitCost ?? 0), new Prisma.Decimal(0)).div(units.length).toDecimalPlaces(8);
         await tx.inventoryUnit.updateMany({ where: { id: { in: units.map(u => u.id) } }, data: { locationId: b.toLocationId } });
       } else ensure(!b.serialNumbers.length, 'Quantity-only items do not accept serials', 400);
       const shared = { skuId: sku.id, unitCost: cost, reason: b.reason, createdBy: actor(q), referenceType: 'TRANSFER', referenceId: String(q.headers['idempotency-key']) };
-      await tx.inventoryTransaction.create({ data: { ...shared, locationId: b.fromLocationId, type: 'TRANSFER_OUT', quantityDelta: -b.quantity } });
-      return tx.inventoryTransaction.create({ data: { ...shared, locationId: b.toLocationId, type: 'TRANSFER_IN', quantityDelta: b.quantity } });
+      await tx.inventoryTransaction.create({ data: { ...shared, locationId: b.fromLocationId, type: 'TRANSFER_OUT', valueDeltaNzd:money(cost.mul(-b.quantity)),quantityDelta: -b.quantity } });
+      return tx.inventoryTransaction.create({ data: { ...shared, locationId: b.toLocationId, type: 'TRANSFER_IN', valueDeltaNzd:money(cost.mul(b.quantity)),quantityDelta: b.quantity } });
     });
   });
   app.post('/inventory/adjustments', async q => {
@@ -75,15 +78,15 @@ export async function registerInventory(app: FastifyInstance, db: PrismaClient) 
       ensure(b.quantityDelta < 0 || b.unitCost !== undefined, 'Unit cost is required when adding stock', 400);
       if (sku.trackingMode === 'SERIALIZED') {
         ensure(b.serialNumbers.length === Math.abs(b.quantityDelta) && new Set(b.serialNumbers).size === b.serialNumbers.length, 'Serial count must match adjustment quantity', 400);
-        if (b.quantityDelta > 0) for (const serialNumber of b.serialNumbers) await tx.inventoryUnit.create({ data: { skuId: sku.id, locationId: b.locationId, serialNumber, unitCost: cost } });
+        if (b.quantityDelta > 0) for (const serialNumber of b.serialNumbers) await tx.inventoryUnit.create({ data: { skuId: sku.id, locationId: b.locationId, serialNumber, unitCost: cost,nzdUnitCost:cost } });
         else {
           const units = await tx.inventoryUnit.findMany({ where: { skuId: sku.id, locationId: b.locationId, serialNumber: { in: b.serialNumbers }, consumedAt: null, reservations: { none: { status: 'ACTIVE' } } } });
           ensure(units.length === -b.quantityDelta, 'A serial is reserved or unavailable');
-          cost = units.reduce((sum, u) => sum.add(u.unitCost ?? 0), new Prisma.Decimal(0)).div(units.length).toDecimalPlaces(2);
+          cost = units.reduce((sum, u) => sum.add(u.nzdUnitCost ?? u.unitCost ?? 0), new Prisma.Decimal(0)).div(units.length).toDecimalPlaces(8);
           await tx.inventoryUnit.updateMany({ where: { id: { in: units.map(u => u.id) } }, data: { locationId: null, consumedAt: new Date() } });
         }
       } else ensure(!b.serialNumbers.length, 'Quantity-only items do not accept serials', 400);
-      return tx.inventoryTransaction.create({ data: { skuId: sku.id, locationId: b.locationId, quantityDelta: b.quantityDelta, unitCost: cost, type: 'ADJUSTMENT', reason: b.reason, createdBy: actor(q) } });
+      return tx.inventoryTransaction.create({ data: { skuId: sku.id, locationId: b.locationId, quantityDelta: b.quantityDelta, valueDeltaNzd:money(cost.mul(b.quantityDelta)),unitCost: cost, type: 'ADJUSTMENT', reason: b.reason, createdBy: actor(q) } });
     });
   });
 }
