@@ -82,6 +82,7 @@ model ComponentFamily {
 }
 
 model Sku {
+  catalogueCandidates CatalogueCandidate[]
   id                 String                       @id @default(cuid())
   code               String                       @unique
   name               String
@@ -105,6 +106,23 @@ model Sku {
   supplierAliases SupplierAlias[]
   shopifyVariants ShopifyCatalogVariant[]
   invoiceLines SupplierInvoiceLine[]
+}
+
+model CatalogueCandidate {
+  id String @id
+  batch String
+  sourceRow Int
+  code String
+  name String
+  counted Boolean @default(false)
+  skuId String?
+  sku Sku? @relation(fields: [skuId], references: [id])
+  confirmedBy String?
+  confirmedAt DateTime?
+  version Int @default(1)
+  createdAt DateTime @default(now())
+  @@unique([batch, sourceRow])
+  @@index([code])
 }
 
 model SkuBarcode {

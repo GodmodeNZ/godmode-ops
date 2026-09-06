@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { actor, ensure, mutate, type Tx } from './core.js';
 import { saveConnection } from './connections.js';
 import { catalogueQuery, connectionQuery, shopifyConfig, shopifyGraphql } from './shopify-client.js';
+import { specificationConflicts, finishedPc } from './component-evidence.js';
 export const normalize = (s: string | null | undefined) => (s ?? '').normalize('NFKC').trim().toUpperCase().replace(/\s+/g, ' ');
 const id = z.string().min(1).max(200);
 const domain = z.string().trim().toLowerCase().regex(/^[a-z0-9][a-z0-9-]*\.myshopify\.com$/);
@@ -24,6 +25,7 @@ export async function matchContext(db: PrismaClient | Tx) {
   return { skus, aliases, variants, quotes };
 }
 export function suggestMatch(ctx: Awaited<ReturnType<typeof matchContext>>, input: { description: string; supplierCode?: string | null; barcode?: string | null }, supplierId?: string | null) {
+  const linked=new Map<string,typeof ctx.variants>();for(const v of ctx.variants)if(v.skuId&&v.confirmedAt&&!finishedPc(v)){const rows=linked.get(v.skuId)??[];rows.push(v);linked.set(v.skuId,rows);}
   const evidence = new Map<string, { skuId: string; reasons: string[]; score: number; exact: boolean }>();
   const add = (skuId: string, reason: string, score: number, exact = true) => { if (!ctx.skus.some(s => s.id === skuId)) return; const old = evidence.get(skuId); evidence.set(skuId, { skuId, reasons: [...(old?.reasons ?? []), reason], score: Math.max(old?.score ?? 0, score), exact: (old?.exact ?? false) || exact }); };
   for (const a of ctx.aliases) if (a.supplierId === supplierId && ((a.kind === 'CODE' && input.supplierCode && a.key === normalize(input.supplierCode)) || (a.kind === 'NAME' && a.key === normalize(input.description)))) add(a.skuId, `Confirmed supplier ${a.kind === 'CODE' ? 'code' : 'name'} alias: ${a.value}`, 100);
@@ -31,7 +33,8 @@ export function suggestMatch(ctx: Awaited<ReturnType<typeof matchContext>>, inpu
   for (const s of ctx.skus) {
     if (input.supplierCode && normalize(s.code) === normalize(input.supplierCode)) add(s.id, 'Exact ERP SKU code', 97);
     if (input.barcode && s.barcodes.some(b => b.value === input.barcode)) add(s.id, 'Exact barcode', 99);
-    for (const v of ctx.variants.filter(v => v.skuId === s.id && v.confirmedAt && v.present && v.status !== 'ARCHIVED')) {
+    if(input.supplierCode&&[(s.attributes as any)?.mpn,(s.attributes as any)?.manufacturerPartNumber].some(x=>x&&normalize(x)===normalize(input.supplierCode)))add(s.id,'Exact manufacturer part number',99);
+    for (const v of (linked.get(s.id)??[]).filter(v => v.present && v.status !== 'ARCHIVED')) {
       if (input.supplierCode && v.shopifySku && normalize(v.shopifySku) === normalize(input.supplierCode)) add(s.id, 'Exact Shopify SKU on a confirmed Shopify link', 97);
       if (input.barcode && v.barcode === input.barcode) add(s.id, 'Exact Shopify barcode on a confirmed Shopify link', 99);
     }
@@ -39,8 +42,8 @@ export function suggestMatch(ctx: Awaited<ReturnType<typeof matchContext>>, inpu
     const shared = [...a].filter(t=>b.has(t)).length, score = shared / Math.max(a.size,b.size,1);
     if (score >= 0.3) add(s.id, 'Similar name only — check model, capacity, colour and kit size', Math.round(score*75), false);
   }
-  const candidates = [...evidence.values()].sort((a,b)=>b.score-a.score).map(m => ({ ...m, sku: ctx.skus.find(s=>s.id===m.skuId), shopify: ctx.variants.filter(v=>v.skuId===m.skuId && v.confirmedAt) }));
-  const exact = candidates.filter(c=>c.exact); return { suggestedSkuId: exact.length===1 ? exact[0].skuId : null, ambiguous: exact.length>1, reason: exact.length>1 ? 'Conflicting identifiers point to different SKUs. Choose the correct component.' : candidates[0]?.reasons.join('; ') ?? 'No matching identifiers. Select a component.', candidates: candidates.slice(0,5) };
+  const candidates = [...evidence.values()].sort((a,b)=>b.score-a.score).map(m => ({ ...m, conflicts: specificationConflicts(input.description,ctx.skus.find(s=>s.id===m.skuId)!.name), sku: ctx.skus.find(s=>s.id===m.skuId), shopify: ctx.variants.filter(v=>v.skuId===m.skuId && v.confirmedAt&&!finishedPc(v)) }));
+  const exact = candidates.filter(c=>c.exact); return { suggestedSkuId: exact.length===1&&!exact[0].conflicts.length ? exact[0].skuId : null, ambiguous: exact.length>1||exact.some(c=>c.conflicts.length>0), reason: exact.length>1 ? 'Conflicting identifiers point to different SKUs. Choose the correct component.' : exact.some(c=>c.conflicts.length)?'Conflicting specifications require review.':candidates[0]?.reasons.join('; ') ?? 'No matching identifiers. Select a component.', candidates: candidates.slice(0,5) };
 }
 export async function registerMatching(app: FastifyInstance, db: PrismaClient) {
   app.get('/matching', async () => { const ctx = await matchContext(db); const rows = ctx.variants.map(v => {

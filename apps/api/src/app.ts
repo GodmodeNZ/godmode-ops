@@ -1,4 +1,5 @@
 import { registerBanking } from './banking.js';
+import { registerComponentReview } from './component-review.js';
 import {costReports} from './cost-reports.js';
 import { registerFx } from './fx-routes.js';
 import { registerMatching } from './matching.js';
@@ -28,7 +29,7 @@ export async function buildApp(db: PrismaClient, logger = true) {
     await api.register(cors, { origin: process.env.WEB_ORIGIN ?? 'http://localhost:5173', credentials: true });
     await api.register(rawBody, { field: 'rawBody', global: false, encoding: false, runFirst: true });
     api.addHook('onRoute', options => { if (options.url.includes('/webhooks/')) options.config = { ...options.config, rawBody: true }; });
-    await registerAuth(api, db); await registerBanking(api, db); await registerFx(api, db); await registerInventory(api, db); await registerProduction(api, db); await registerProcurementRoutes(api, db); await registerIntegrations(api, db); await registerMatching(api, db); await registerInvoices(api, db); await registerMailbox(api, db);
+    await registerAuth(api, db); await registerComponentReview(api, db); await registerBanking(api, db); await registerFx(api, db); await registerInventory(api, db); await registerProduction(api, db); await registerProcurementRoutes(api, db); await registerIntegrations(api, db); await registerMatching(api, db); await registerInvoices(api, db); await registerMailbox(api, db);
     api.get('/audit', async () => db.auditLog.findMany({ orderBy: { createdAt: 'desc' }, take: 1000 }));
     api.get('/reports',async()=>costReports(db));
   }, { prefix: '/api' });
