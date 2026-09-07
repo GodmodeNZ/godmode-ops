@@ -1,5 +1,7 @@
 # Akahu bank feeds and supplier reconciliation
 
+For provider-approved access to the owner’s own business accounts using a personal app, see [Approved internal use](akahu-internal-use.md). The full-app requirements below apply to the separate OAuth connection method.
+
 ## Current installation and callback
 
 The existing local ERP is `http://localhost:4000`. Its exact development callback is:
@@ -12,7 +14,7 @@ Production banking requires an HTTPS `WEB_ORIGIN`, an HTTPS registered callback 
 
 ## Credentials and onboarding
 
-1. Request a **full app for enduring account/transaction information** from Akahu, initially with sandbox access. Discuss the BNZ business accounts and bank login types you need, history coverage (at least six months if required), refresh frequency and commercial pricing. Personal apps are not a substitute for production business reconciliation.
+1. Request a **full app for enduring account/transaction information** from Akahu, initially with sandbox access. Discuss the BNZ business accounts and bank login types you need, history coverage (at least six months if required), refresh frequency and commercial pricing. Use the separately gated internal personal-app mode only when Akahu has confirmed that the owner’s business-account use is permitted.
 2. Obtain the full-app **App ID Token**, **App Secret**, and approved redirect registration. Configure only `ACCOUNTS` and `TRANSACTIONS` read permissions with enduring consent. No identity or payment-initiation permissions are needed. The authorization request sends the explicit scope string `ENDURING_CONSENT ACCOUNTS TRANSACTIONS`; it does not request every permission on the app.
 3. Use an isolated database for sandbox testing. Open **Banking â†’ Full-app connection settings**, choose Sandbox, enter the app credentials and the UTC history start date, and save. Secrets are submitted once and encrypted on the server using the existing AES-256-GCM integration key. They are not returned by the status API. The OAuth authorization URL necessarily contains the public App ID Token, but never the App Secret or user access token.
 4. Choose **Connect full app**, complete Akahu's consent screen, and return to the callback. The server exchanges the short-lived authorization code, validates granted scopes, and stores the resulting token encrypted. It uses durable, expiring, single-use state tied to an administrator and an HttpOnly browser cookie. Changes to settings invalidate older state. Callback URLs and authorization query strings are excluded from application request logs.

@@ -1,6 +1,19 @@
+import { createHash } from 'node:crypto';
 import { DomainError, ensure } from './core.js';
 
 export const AKAHU_SCOPES = 'ENDURING_CONSENT ACCOUNTS TRANSACTIONS';
+// Internal use is explicitly bound to the approved app and one account, never inferred from a database name.
+export function internalUseGate(appId?: string) {
+  ensure(process.env.AKAHU_INTERNAL_APPROVED === 'true' && process.env.AKAHU_PERSONAL_TEST !== 'true'
+    && /^[a-f0-9]{64}$/.test(process.env.AKAHU_INTERNAL_APP_SHA256 ?? '')
+    && /^acc_[\w-]+$/.test(process.env.AKAHU_INTERNAL_ACCOUNT_ID ?? ''), 'Internal use requires reviewed provider approval and an app/account allowlist configured by the server administrator.', 409);
+  const origin = new URL(process.env.WEB_ORIGIN ?? 'http://localhost:4000');
+  ensure(origin.protocol === 'https:' && process.env.COOKIE_SECURE !== 'false'
+    || origin.protocol === 'http:' && ['localhost','127.0.0.1'].includes(origin.hostname), 'Internal bank access requires HTTPS with secure cookies, or a loopback-only local ERP.', 409);
+  if (appId) ensure(createHash('sha256').update(appId).digest('hex') === process.env.AKAHU_INTERNAL_APP_SHA256, 'These credentials do not belong to the approved internal app.', 409);
+}
+export function internalAccountAllowed(id: string) { return id === process.env.AKAHU_INTERNAL_ACCOUNT_ID; }
+export function bankSyncInterval(mode: string) { return mode === 'INTERNAL_PERSONAL' ? 86400000 : 900000; }
 export function personalTestGate() {
   ensure(process.env.AKAHU_PERSONAL_TEST === 'true'
     && /^\/godmode_akahu_personal_test_\d+$/.test(new URL(process.env.DATABASE_URL!).pathname)
@@ -23,6 +36,7 @@ export class AkahuError extends DomainError {
   }
 }
 export function bankingGate(mode: string) {
+  if (mode === 'INTERNAL_PERSONAL') { internalUseGate(); return; }
   if (mode === 'PERSONAL_TEST') { personalTestGate(); return; }
   ensure(process.env.AKAHU_PERSONAL_TEST !== 'true', 'This instance only supports isolated personal-app testing.', 409);
   const database = new URL(process.env.DATABASE_URL!).pathname;
@@ -40,6 +54,12 @@ export function bankingCallback() {
   return uri;
 }
 export async function akahuRequest(config: any, path: string, method = 'GET', body?: any) {
+  if (config?.kind === 'INTERNAL_PERSONAL') {
+    internalUseGate(config.appId);
+    ensure(method === 'GET', 'Internal personal apps allow cached reads only; bank refresh, OAuth and remote revocation are disabled.', 409);
+    const accountId = /^\/accounts\/(acc_[\w-]+)\//.exec(path)?.[1];
+    ensure(!accountId || internalAccountAllowed(accountId), 'Account is outside the approved internal allowlist.', 409);
+  }
   if (config?.kind === 'PERSONAL_TEST' || process.env.AKAHU_PERSONAL_TEST === 'true') {
     personalTestGate();
     ensure(config?.kind === 'PERSONAL_TEST' && method === 'GET', 'Personal tests allow cached reads only. Refresh, OAuth and remote revocation are disabled.', 409);

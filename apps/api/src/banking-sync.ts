@@ -4,7 +4,7 @@ import { PrismaClient } from '@prisma/client';
 import { ensure, json, transaction, type Tx } from './core.js';
 import { readConnection, saveConnection } from './connections.js';
 import { D, money } from './fx.js';
-import { AkahuError, akahuRequest, bankingGate, page, personalTestWindow } from './akahu-client.js';
+import { AkahuError, akahuRequest, bankingGate, page, personalTestWindow, internalAccountAllowed } from './akahu-client.js';
 
 export async function bankFeed(tx: PrismaClient | Tx) {
   return tx.bankFeed.upsert({ where: { id: 'akahu' }, create: { id: 'akahu', since: new Date(new Date().toISOString().slice(0, 10)) }, update: {} });
@@ -15,7 +15,7 @@ export async function bankLease<T>(db: PrismaClient, fn: (config: any, owner: st
   const config = await transaction(db, async tx => {
     const f = await bankFeed(tx); bankingGate(f.mode); bankIdle(f);
     ensure(!f.nextRequestAt || f.nextRequestAt <= new Date(), 'Akahu requests are paused until ' + f.nextRequestAt?.toISOString(), 409);
-    const c = await readConnection(tx, 'AKAHU'); ensure(c?.accessToken && f.status === 'CONNECTED', 'Connect the Akahu full app first.', 409);
+    const c = await readConnection(tx, 'AKAHU'); ensure((f.mode === 'INTERNAL_PERSONAL') === (c?.kind === 'INTERNAL_PERSONAL'), 'Bank connection mode does not match its credentials.', 409); ensure(c?.accessToken && f.status === 'CONNECTED', 'Connect the Akahu full app first.', 409);
     await tx.bankFeed.update({ where: { id: f.id }, data: { leaseOwner: owner, leaseUntil: new Date(Date.now() + 45000) } }); return c;
   });
   try { return await fn(config, owner); }
@@ -53,6 +53,7 @@ export async function loadBankAccounts(db: PrismaClient) {
       await assertLease(tx, owner);
       await tx.bankAccount.updateMany({ data: { status: 'UNAVAILABLE', eligible: false } });
       for (const a of accounts) {
+        if (c.kind === 'INTERNAL_PERSONAL' && !internalAccountAllowed(a._id)) continue;
         if (!/^(BNZ|Bank of New Zealand)$/i.test(a.connection?.name ?? '')) continue;
         ensure(/^acc_[\w-]+$/.test(a._id), 'Invalid Akahu account identifier', 502);
         const currency = /^[A-Z]{3}$/.test(a.balance?.currency ?? '') ? a.balance.currency : 'XXX';
@@ -81,6 +82,7 @@ export async function startBankSync(db: PrismaClient) {
     const old = await tx.bankSync.findFirst({ where: { status: { in: ['RUNNING', 'FAILED'] } }, orderBy: { startedAt: 'desc' } });
     if (old) return old;
     const accounts = await tx.bankAccount.findMany({ where: { selected: true, eligible: true } }); ensure(accounts.length, 'Select eligible BNZ accounts first.', 400);
+    if (f.mode === 'INTERNAL_PERSONAL') ensure(accounts.length === 1 && internalAccountAllowed(accounts[0].id), 'Only the approved internal account may be imported.', 409);
     if (f.mode === 'PERSONAL_TEST') {
       ensure(accounts.length === 1 && !f.autoSync, 'Personal tests require one account and disabled scheduling.', 409);
       const c = await readConnection(tx, 'AKAHU');
@@ -132,6 +134,7 @@ export async function runBankSync(db: PrismaClient, maxPages = 3) {
 }
 export async function requestBankRefresh(db: PrismaClient) {
   ensure(process.env.AKAHU_PERSONAL_TEST !== 'true', 'Bank refresh is disabled for personal tests. Fetch cached transactions only.', 409);
+  ensure((await bankFeed(db)).mode !== 'INTERNAL_PERSONAL', 'Internal personal apps fetch cached data only; bank refresh is disabled.', 409);
   return bankLease(db, async (c, owner) => {
     const f = await bankFeed(db), rest = Math.max(15, Number(process.env.AKAHU_REFRESH_REST_MINUTES) || 15) * 60000;
     ensure(!f.lastRefreshAttempt || Date.now() - f.lastRefreshAttempt.getTime() >= rest, 'Manual bank refresh is cooling down. Fetch cached transactions instead.', 409);
